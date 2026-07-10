@@ -1,0 +1,45 @@
+{
+  "name": "agente-whatsapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agente de WhatsApp con Baileys + OpenRouter + dashboard Next.js + Supabase",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "start:bot": "tsx scripts/start-bot.ts",
+    "start:all": "concurrently --kill-others --names BOT,WEB --prefix-colors yellow,cyan \"npm run start:bot\" \"npm run start\""
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@supabase/supabase-js": "^2.110.0",
+    "@whiskeysockets/baileys": "^6.7.0",
+    "concurrently": "^9.1.0",
+    "next": "^16.2.10",
+    "nodemailer": "^9.0.3",
+    "openai": "^6.0.0",
+    "pino": "^9.5.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tsx": "^4.19.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/qrcode": "^1.5.5",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.1",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.7.0"
+  }
+}
