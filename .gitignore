@@ -18,3 +18,6 @@ auth/
 # sistema
 .DS_Store
 Thumbs.db
+
+# ajustes locales de Claude Code (hook de auto-push, personal)
+.claude/settings.local.json
