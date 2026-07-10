@@ -48,6 +48,9 @@ export default function ConnectionGate() {
   const [pwOpen, setPwOpen] = useState(false);
   // Ancho de la lista de conversaciones (columna redimensionable, persistido).
   const list = usePanelWidth("agente-w-list", 320, 220, 560);
+  // Ancho de la barra lateral de navegación (solo expandida; plegada es fija).
+  const side = usePanelWidth("agente-w-sidebar", 208, 160, 340);
+  const [sideResizing, setSideResizing] = useState(false);
 
   // ¿Hay sesión activa? Se comprueba al montar y luego cada 60s: /api/auth/me
   // relee al miembro de la DB, así que desactivar a alguien lo saca del
@@ -200,7 +203,17 @@ export default function ConnectionGate() {
         user={me}
         onLogout={logout}
         onChangePassword={() => setPwOpen(true)}
+        width={side.width}
+        resizing={sideResizing}
       />
+      {!collapsed && (
+        <Resizer
+          onDelta={side.adjust}
+          onReset={side.reset}
+          onDragStart={() => setSideResizing(true)}
+          onDragEnd={() => setSideResizing(false)}
+        />
+      )}
       <div className="flex min-w-0 flex-1 flex-col">
         <DashboardHeader
           connected={conn?.connected ?? false}

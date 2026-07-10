@@ -9,11 +9,16 @@ interface Props {
   // según de qué lado esté su columna).
   onDelta: (dx: number) => void;
   onReset?: () => void;
+  // Para paneles que animan su ancho (p. ej. la barra lateral al plegarse):
+  // permiten pausar la transición mientras se arrastra.
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
 }
 
-export default function Resizer({ onDelta, onReset }: Props) {
+export default function Resizer({ onDelta, onReset, onDragStart, onDragEnd }: Props) {
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
+    onDragStart?.();
     let last = e.clientX;
     const move = (ev: PointerEvent) => {
       onDelta(ev.clientX - last);
@@ -24,6 +29,7 @@ export default function Resizer({ onDelta, onReset }: Props) {
       window.removeEventListener("pointerup", up);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      onDragEnd?.();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);

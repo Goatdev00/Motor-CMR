@@ -30,6 +30,12 @@ interface Props {
   user: SessionUser;
   onLogout: () => void;
   onChangePassword: () => void;
+  // Ancho en px cuando está expandida (columna redimensionable desde el
+  // divisor); plegada siempre mide w-14.
+  width?: number;
+  // true mientras se arrastra el divisor: pausa la transición de ancho para
+  // que la columna siga al cursor sin lag.
+  resizing?: boolean;
 }
 
 // Iconos propios (trazo simple, estilo minimalista) para no sumar deps.
@@ -154,15 +160,18 @@ export default function Sidebar({
   user,
   onLogout,
   onChangePassword,
+  width = 208,
+  resizing = false,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const initial = (user.name.trim()[0] ?? "?").toUpperCase();
 
   return (
     <aside
-      className={`flex shrink-0 flex-col border-r border-neutral-800 bg-neutral-900 transition-[width] duration-200 ${
-        collapsed ? "w-14" : "w-52"
-      }`}
+      style={collapsed ? undefined : { width }}
+      className={`flex shrink-0 flex-col border-r border-neutral-800 bg-neutral-900 ${
+        resizing ? "" : "transition-[width] duration-200"
+      } ${collapsed ? "w-14" : ""}`}
     >
       {/* Marca (tipografía del logo: bold geométrica + tramos en itálica) */}
       <div
