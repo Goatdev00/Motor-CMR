@@ -910,6 +910,9 @@ export interface EmailQueueItem {
   scheduled_at: number | null;
   sent_at: number | null;
   created_at: number;
+  // Reply-To opcional (sección Leads). undefined si la columna aún no existe
+  // en la DB (schema.sql sin re-ejecutar): el envío sale sin la cabecera.
+  reply_to?: string | null;
 }
 
 export interface EmailDraft {
@@ -918,6 +921,7 @@ export interface EmailDraft {
   subject: string;
   html: string;
   batch_id?: string | null;
+  reply_to?: string | null;
 }
 
 export async function enqueueEmails(drafts: EmailDraft[]): Promise<number> {

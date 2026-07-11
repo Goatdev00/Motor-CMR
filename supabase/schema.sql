@@ -651,6 +651,10 @@ create table if not exists email_queue (
 create index if not exists idx_email_queue_pending on email_queue (sent, created_at);
 create index if not exists idx_email_queue_sent_at on email_queue (sent_at);
 
+-- Responder-a opcional por correo (sección Leads: el operador decide a qué
+-- buzón llegan las respuestas de cada envío).
+alter table email_queue add column if not exists reply_to text;
+
 alter table email_queue enable row level security;
 
 -- ============================================================

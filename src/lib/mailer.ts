@@ -55,7 +55,15 @@ function buildTransport(config: EmailConfig) {
 
 export async function sendEmail(
   config: EmailConfig,
-  opts: { to: string; toName?: string | null; subject: string; html: string }
+  opts: {
+    to: string;
+    toName?: string | null;
+    subject: string;
+    html: string;
+    // Buzón al que llegan las respuestas (cabecera Reply-To). null/vacío =
+    // responden al remitente, como siempre.
+    replyTo?: string | null;
+  }
 ): Promise<void> {
   const transport = buildTransport(config);
   try {
@@ -66,6 +74,7 @@ export async function sendEmail(
       to: opts.toName ? { name: opts.toName, address: opts.to } : opts.to,
       subject: opts.subject,
       html: opts.html,
+      replyTo: opts.replyTo || undefined,
     });
   } finally {
     transport.close();

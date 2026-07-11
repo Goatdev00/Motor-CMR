@@ -10,6 +10,7 @@ import type { SessionUser } from "./LoginScreen";
 export type DashboardView =
   | "chats"
   | "crm"
+  | "leads"
   | "mailing"
   | "calendar"
   | "alarms"
@@ -72,6 +73,22 @@ const ITEMS: { key: DashboardView; label: string; icon: React.ReactNode }[] = [
           <>
             <path d="M10 4h4v10h-4z" />
             <path d="M16 4h4v7h-4z" />
+          </>
+        }
+      />
+    ),
+  },
+  {
+    key: "leads",
+    label: "Leads",
+    icon: (
+      <Icon
+        path="M12 11a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"
+        extra={
+          <>
+            <path d="M6 19.5c0-3 2.7-4.8 6-4.8s6 1.8 6 4.8" />
+            <path d="M19 4v4" />
+            <path d="M21 6h-4" />
           </>
         }
       />

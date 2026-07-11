@@ -408,6 +408,7 @@ async function flushEmailQueue(settings: Record<string, ChannelSettingsRow>): Pr
         toName: item.to_name,
         subject: item.subject,
         html: item.html,
+        replyTo: item.reply_to ?? null,
       });
       await markEmailSent(item.id);
       console.log(`[bot] ✉️  Email #${item.id} enviado a ${item.to_email}`);

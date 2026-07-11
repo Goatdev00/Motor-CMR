@@ -7,6 +7,7 @@ import LoginScreen, { type SessionUser } from "./LoginScreen";
 import ConversationList from "./ConversationList";
 import ConversationPanel from "./ConversationPanel";
 import CrmBoard from "./CrmBoard";
+import LeadsHubPanel from "./LeadsHubPanel";
 import ChannelSettings from "./ChannelSettings";
 import MailingPanel from "./MailingPanel";
 import CalendarPanel from "./CalendarPanel";
@@ -27,6 +28,7 @@ export interface ConnectionPayload {
 const VIEW_TITLES: Record<DashboardView, string> = {
   chats: "Chats",
   crm: "CRM",
+  leads: "Leads",
   mailing: "Mailing",
   calendar: "Calendario",
   alarms: "Alarmas",
@@ -222,6 +224,8 @@ export default function ConnectionGate() {
         />
         {view === "crm" ? (
           <CrmBoard onOpenLead={handleOpenLead} />
+        ) : view === "leads" ? (
+          <LeadsHubPanel onOpenLead={handleOpenLead} />
         ) : view === "mailing" ? (
           <MailingPanel />
         ) : view === "calendar" ? (
