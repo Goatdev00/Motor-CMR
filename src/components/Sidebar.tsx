@@ -16,7 +16,8 @@ export type DashboardView =
   | "calendar"
   | "alarms"
   | "team"
-  | "channels";
+  | "channels"
+  | "settings";
 
 const ROLE_LABELS: Record<string, string> = {
   ADMIN: "Admin",
@@ -254,6 +255,35 @@ export default function Sidebar({
           );
         })}
       </nav>
+
+      {/* Configuración (tuerca, sobre el perfil): recursos y documentación */}
+      <div className="border-t border-neutral-800 p-2">
+        <button
+          onClick={() => onViewChange("settings")}
+          title={collapsed ? "Configuración" : undefined}
+          className={`flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
+            collapsed ? "justify-center" : ""
+          } ${
+            view === "settings"
+              ? "bg-neutral-800 text-neutral-100"
+              : "text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200"
+          }`}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5 shrink-0"
+          >
+            <circle cx="12" cy="12" r="3.2" />
+            <path d="M19.3 12a7.3 7.3 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-2.1-1.2L14.4 3h-4l-.4 2.7a7.6 7.6 0 0 0-2.1 1.2l-2.3-1-2 3.4 2 1.5a7.3 7.3 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 0 0 2.1 1.2l.4 2.7h4l.4-2.7a7.6 7.6 0 0 0 2.1-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z" />
+          </svg>
+          {!collapsed && <span className="truncate">Configuración</span>}
+        </button>
+      </div>
 
       {/* Cuenta (abajo a la izquierda) */}
       <div className="relative border-t border-neutral-800 p-2">

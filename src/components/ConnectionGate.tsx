@@ -9,6 +9,7 @@ import ConversationPanel from "./ConversationPanel";
 import CrmBoard from "./CrmBoard";
 import LeadsHubPanel from "./LeadsHubPanel";
 import TemplatesPanel from "./TemplatesPanel";
+import SettingsPanel from "./SettingsPanel";
 import ChannelSettings from "./ChannelSettings";
 import MailingPanel from "./MailingPanel";
 import CalendarPanel from "./CalendarPanel";
@@ -36,6 +37,7 @@ const VIEW_TITLES: Record<DashboardView, string> = {
   alarms: "Alarmas",
   team: "Equipo",
   channels: "Canales",
+  settings: "Configuración",
 };
 
 const SIDEBAR_KEY = "agente-sidebar-collapsed";
@@ -240,6 +242,8 @@ export default function ConnectionGate() {
           <TeamPanel currentUser={me} />
         ) : view === "channels" ? (
           <ChannelSettings />
+        ) : view === "settings" ? (
+          <SettingsPanel />
         ) : (
           <div className="flex min-h-0 flex-1 overflow-x-auto">
             <ConversationList
