@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   findMatchingTrigger,
+  triggerMatches,
   type KeywordMatch,
   type KeywordTrigger,
 } from "@/lib/keyword-match";
@@ -16,12 +17,16 @@ import type { QuickReply } from "@/lib/db";
 
 const cardClass = "rounded-xl border border-neutral-800 bg-neutral-900 p-4";
 const inputClass =
-  "w-full rounded-lg border border-neutral-700 bg-neutral-950 px-2.5 py-1.5 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-emerald-600";
+  "w-full rounded-lg border border-neutral-700 bg-neutral-950 px-2.5 py-1.5 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-emerald-600 disabled:opacity-60";
 const btnPrimary =
   "rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50";
 const btnGhost =
   "rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800 disabled:opacity-50";
 const labelClass = "mb-1 block text-[11px] font-medium text-neutral-500";
+
+// Borrador local: los cambios sin guardar sobreviven a un cambio de pestaña
+// del dashboard (el panel se desmonta al navegar a Chats/CRM/etc.).
+const DRAFT_KEY = "plantillas-borrador";
 
 export default function TemplatesPanel() {
   return (
@@ -36,89 +41,197 @@ export default function TemplatesPanel() {
 
 // ── Palabras clave con respuesta automática ─────────────────
 
-// Fila editable: el id estable permite conservar la edición aunque el
-// servidor devuelva la lista saneada.
 function KeywordTriggersCard() {
   const [triggers, setTriggers] = useState<KeywordTrigger[] | null>(null);
+  // rev de la versión del servidor sobre la que se edita (control de
+  // concurrencia optimista: otra pestaña guardando primero da 409).
+  const [rev, setRev] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<{ triggers: KeywordTrigger[]; rev: string | null } | null>(null);
   const [savedMsg, setSavedMsg] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
   const [testText, setTestText] = useState("");
+  // La lista puede cambiar mientras el PUT viaja; con los campos
+  // deshabilitados durante el guardado no debería, pero el ref evita
+  // sobrescribir ediciones si el navegador se las arregla para colarlas.
+  const sentListRef = useRef<string | null>(null);
+
+  const load = async () => {
+    setLoadError(null);
+    try {
+      const res = await fetch("/api/templates/keywords", { cache: "no-store" });
+      const data = (await res.json()) as {
+        triggers?: KeywordTrigger[];
+        rev?: string | null;
+        error?: string;
+      };
+      if (!res.ok || !data.triggers) {
+        setLoadError(data.error ?? "No se pudieron cargar las palabras clave");
+        return;
+      }
+      setRev(data.rev ?? null);
+
+      // ¿Quedó un borrador sin guardar de una visita anterior? Se restaura
+      // (con aviso) en vez de perder lo escrito al cambiar de pestaña.
+      let draft: KeywordTrigger[] | null = null;
+      try {
+        const raw = sessionStorage.getItem(DRAFT_KEY);
+        if (raw) draft = JSON.parse(raw) as KeywordTrigger[];
+      } catch {
+        /* borrador corrupto o sin sessionStorage: se ignora */
+      }
+      if (draft && JSON.stringify(draft) !== JSON.stringify(data.triggers)) {
+        setTriggers(draft);
+        setDirty(true);
+        setDraftRestored(true);
+      } else {
+        setTriggers(data.triggers);
+        setDirty(false);
+      }
+    } catch {
+      setLoadError("No se pudieron cargar las palabras clave");
+    }
+  };
 
   useEffect(() => {
-    fetch("/api/templates/keywords", { cache: "no-store" })
-      .then((res) => res.json())
-      .then((data: { triggers?: KeywordTrigger[]; error?: string }) => {
-        if (data.triggers) setTriggers(data.triggers);
-        else setError(data.error ?? "No se pudieron cargar las palabras clave");
-      })
-      .catch(() => setError("No se pudieron cargar las palabras clave"));
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const update = (id: string, patch: Partial<KeywordTrigger>) => {
-    setTriggers((prev) =>
-      prev ? prev.map((t) => (t.id === id ? { ...t, ...patch } : t)) : prev
-    );
+  const markDirty = (next: KeywordTrigger[]) => {
     setDirty(true);
     setSavedMsg(false);
+    try {
+      sessionStorage.setItem(DRAFT_KEY, JSON.stringify(next));
+    } catch {
+      /* sin storage el borrador no sobrevive a un cambio de pestaña */
+    }
+  };
+
+  const clearDraft = () => {
+    try {
+      sessionStorage.removeItem(DRAFT_KEY);
+    } catch {
+      /* noop */
+    }
+  };
+
+  const update = (id: string, patch: Partial<KeywordTrigger>) => {
+    setTriggers((prev) => {
+      if (!prev) return prev;
+      const next = prev.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      markDirty(next);
+      return next;
+    });
   };
 
   const add = () => {
-    setTriggers((prev) => [
-      ...(prev ?? []),
-      {
-        id: `nuevo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        keyword: "",
-        content: "",
-        match: "exacta" as KeywordMatch,
-        enabled: true,
-        also_human: false,
-      },
-    ]);
-    setDirty(true);
-    setSavedMsg(false);
+    setTriggers((prev) => {
+      const next = [
+        ...(prev ?? []),
+        {
+          id: `nuevo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          keyword: "",
+          content: "",
+          match: "exacta" as KeywordMatch,
+          enabled: true,
+          also_human: false,
+        },
+      ];
+      markDirty(next);
+      return next;
+    });
   };
 
   const remove = (id: string) => {
-    setTriggers((prev) => (prev ? prev.filter((t) => t.id !== id) : prev));
-    setDirty(true);
-    setSavedMsg(false);
+    setTriggers((prev) => {
+      if (!prev) return prev;
+      const next = prev.filter((t) => t.id !== id);
+      markDirty(next);
+      return next;
+    });
+  };
+
+  const discardDraft = async () => {
+    clearDraft();
+    setDraftRestored(false);
+    setDirty(false);
+    setTriggers(null);
+    await load();
+  };
+
+  const acceptConflict = () => {
+    if (!conflict) return;
+    setTriggers(conflict.triggers);
+    setRev(conflict.rev);
+    setConflict(null);
+    setDirty(false);
+    setDraftRestored(false);
+    clearDraft();
   };
 
   const save = async () => {
     if (!triggers) return;
     setBusy(true);
     setError(null);
+    setConflict(null);
     setSavedMsg(false);
+    sentListRef.current = JSON.stringify(triggers);
     try {
       const res = await fetch("/api/templates/keywords", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ triggers }),
+        body: JSON.stringify({ triggers, baseRev: rev }),
       });
       const data = (await res.json().catch(() => null)) as {
         triggers?: KeywordTrigger[];
+        rev?: string | null;
         error?: string;
+        conflict?: boolean;
       } | null;
+      if (res.status === 409 && data?.conflict) {
+        setConflict({ triggers: data.triggers ?? [], rev: data.rev ?? null });
+        setError(data.error ?? "Alguien más guardó primero");
+        return;
+      }
       if (!res.ok || !data?.triggers) {
         setError(data?.error ?? "No se pudo guardar");
         return;
       }
-      setTriggers(data.triggers);
-      setDirty(false);
-      setSavedMsg(true);
+      // Si el usuario logró editar mientras el PUT viajaba, sus cambios
+      // mandan: se conserva la edición y queda pendiente de guardar.
+      const editedDuringFlight =
+        sentListRef.current !== null &&
+        JSON.stringify(triggers) !== sentListRef.current;
+      setRev(data.rev ?? null);
+      if (!editedDuringFlight) {
+        setTriggers(data.triggers);
+        setDirty(false);
+        setDraftRestored(false);
+        clearDraft();
+        setSavedMsg(true);
+      }
     } catch {
       setError("Error de red al guardar");
     } finally {
+      sentListRef.current = null;
       setBusy(false);
     }
   };
 
-  // Probador en vivo: usa EXACTAMENTE la misma lógica de matching que el bot.
+  // Probador en vivo: usa EXACTAMENTE la misma lógica de matching que el
+  // bot, sobre lo que hay EN PANTALLA (incluye cambios sin guardar).
   const testResult = useMemo(() => {
     if (!testText.trim() || !triggers) return null;
-    return findMatchingTrigger(triggers, testText);
+    const active = findMatchingTrigger(triggers, testText);
+    if (active) return { trigger: active, paused: false };
+    // Ninguna activa dispara: ¿alguna PAUSADA lo haría? (aviso honesto en
+    // vez de un "no dispara nada" desconcertante).
+    const paused = triggers.find((t) => !t.enabled && triggerMatches(t, testText));
+    return paused ? { trigger: paused, paused: true } : null;
   }, [testText, triggers]);
 
   return (
@@ -132,116 +245,172 @@ function KeywordTriggersCard() {
             Si un cliente escribe la palabra en el chat de cualquier canal (WhatsApp, Instagram,
             Messenger, WhatsApp API), el bot responde al instante con el contenido asignado —
             sin pasar por la IA. No distingue mayúsculas, tildes ni signos: «¡INFO!» dispara
-            igual que «info». Los cambios aplican solos en menos de 15 segundos.
+            igual que «info». Los cambios aplican solos en menos de 15 segundos tras guardar.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={add} disabled={busy || triggers === null} className={btnGhost}>
             + Agregar palabra
           </button>
-          <button onClick={save} disabled={busy || !dirty} className={btnPrimary}>
+          <button onClick={save} disabled={busy || !dirty || triggers === null} className={btnPrimary}>
             {busy ? "Guardando..." : "Guardar cambios"}
           </button>
         </div>
       </div>
 
-      {error && <p className="mt-3 rounded-lg bg-red-950 p-2 text-xs text-red-400">{error}</p>}
+      {loadError && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-red-950 p-2 text-xs text-red-400">
+          <span>{loadError}</span>
+          <button onClick={load} className="shrink-0 font-medium underline underline-offset-2">
+            Reintentar
+          </button>
+        </div>
+      )}
+      {error && !conflict && (
+        <p className="mt-3 rounded-lg bg-red-950 p-2 text-xs text-red-400">{error}</p>
+      )}
+      {conflict && (
+        <div className="mt-3 space-y-2 rounded-lg bg-amber-950 p-3 text-xs text-amber-300">
+          <p>{error}</p>
+          <div className="flex gap-2">
+            <button
+              onClick={acceptConflict}
+              className="rounded-lg bg-amber-600 px-2.5 py-1 font-medium text-white hover:bg-amber-700"
+            >
+              Cargar la versión más reciente (descarta lo mío)
+            </button>
+            <button
+              onClick={() => {
+                // Reintentar encima de la versión nueva conservando MI lista.
+                setRev(conflict.rev);
+                setConflict(null);
+              }}
+              className="rounded-lg border border-amber-700 px-2.5 py-1 font-medium hover:bg-amber-900"
+            >
+              Mantener lo mío y volver a guardar
+            </button>
+          </div>
+        </div>
+      )}
+      {draftRestored && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-sky-950 p-2 text-xs text-sky-300">
+          <span>
+            Recuperamos cambios sin guardar de tu visita anterior. Guárdalos o descártalos.
+          </span>
+          <button
+            onClick={discardDraft}
+            className="shrink-0 font-medium underline underline-offset-2"
+          >
+            Descartar borrador
+          </button>
+        </div>
+      )}
       {savedMsg && (
         <p className="mt-3 rounded-lg bg-emerald-950 p-2 text-xs text-emerald-400">
           ✓ Guardado — el bot ya responde con la nueva configuración
         </p>
       )}
+      {dirty && !savedMsg && !conflict && (
+        <p className="mt-3 rounded-lg bg-neutral-950 p-2 text-xs text-amber-400/90">
+          Hay cambios sin guardar — el bot sigue usando la última versión guardada.
+        </p>
+      )}
 
-      <div className="mt-3 space-y-2">
-        {triggers === null && !error && (
-          <p className="py-6 text-center text-xs text-neutral-600">Cargando...</p>
-        )}
-        {triggers?.map((t) => (
-          <div key={t.id} className="rounded-xl border border-neutral-800 bg-neutral-950 p-3">
-            <div className="flex flex-wrap items-end gap-2">
-              <div className="min-w-40 flex-1">
-                <label className={labelClass}>Palabra o frase</label>
-                <input
-                  value={t.keyword}
-                  onChange={(e) => update(t.id, { keyword: e.target.value })}
-                  placeholder="INFO"
-                  maxLength={80}
-                  className={`${inputClass} font-semibold uppercase placeholder:normal-case`}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>Cuándo dispara</label>
-                <select
-                  value={t.match}
-                  onChange={(e) => update(t.id, { match: e.target.value as KeywordMatch })}
-                  className={`${inputClass} w-auto`}
-                >
-                  <option value="exacta">El mensaje es solo esta palabra</option>
-                  <option value="contiene">El mensaje la contiene</option>
-                </select>
-              </div>
-              <label
-                className="flex cursor-pointer items-center gap-1.5 pb-2 text-xs text-neutral-400"
-                title="Si está activo, responde aunque un operador haya tomado la conversación (modo humano)"
-              >
-                <input
-                  type="checkbox"
-                  checked={t.also_human}
-                  onChange={(e) => update(t.id, { also_human: e.target.checked })}
-                  className="h-3.5 w-3.5 accent-emerald-600"
-                />
-                También en modo humano
-              </label>
-              <div className="ml-auto flex items-center gap-2 pb-1">
-                <button
-                  role="switch"
-                  aria-checked={t.enabled}
-                  onClick={() => update(t.id, { enabled: !t.enabled })}
-                  title={t.enabled ? "Activa" : "Pausada"}
-                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-                    t.enabled ? "bg-emerald-600" : "bg-neutral-700"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-                      t.enabled ? "left-[18px]" : "left-0.5"
-                    }`}
+      {/* Los campos se bloquean durante el guardado: editar con el PUT en
+          vuelo perdía lo escrito al llegar la respuesta. */}
+      <fieldset disabled={busy} className="m-0 mt-3 min-w-0 border-0 p-0">
+        <div className="space-y-2">
+          {triggers === null && !loadError && (
+            <p className="py-6 text-center text-xs text-neutral-600">Cargando...</p>
+          )}
+          {triggers?.map((t) => (
+            <div key={t.id} className="rounded-xl border border-neutral-800 bg-neutral-950 p-3">
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-40 flex-1">
+                  <label className={labelClass}>Palabra o frase</label>
+                  <input
+                    value={t.keyword}
+                    onChange={(e) => update(t.id, { keyword: e.target.value })}
+                    placeholder="INFO"
+                    maxLength={80}
+                    className={`${inputClass} font-semibold uppercase placeholder:normal-case`}
                   />
-                </button>
-                <button
-                  onClick={() => remove(t.id)}
-                  className="text-xs text-red-500 underline-offset-2 hover:underline"
+                </div>
+                <div>
+                  <label className={labelClass}>Cuándo dispara</label>
+                  <select
+                    value={t.match}
+                    onChange={(e) => update(t.id, { match: e.target.value as KeywordMatch })}
+                    className={`${inputClass} w-auto`}
+                  >
+                    <option value="exacta">El mensaje es solo esta palabra</option>
+                    <option value="contiene">El mensaje la contiene</option>
+                  </select>
+                </div>
+                <label
+                  className="flex cursor-pointer items-center gap-1.5 pb-2 text-xs text-neutral-400"
+                  title="Si está activo, responde aunque un operador haya tomado la conversación (modo humano)"
                 >
-                  Eliminar
-                </button>
+                  <input
+                    type="checkbox"
+                    checked={t.also_human}
+                    onChange={(e) => update(t.id, { also_human: e.target.checked })}
+                    className="h-3.5 w-3.5 accent-emerald-600"
+                  />
+                  También en modo humano
+                </label>
+                <div className="ml-auto flex items-center gap-2 pb-1">
+                  <button
+                    role="switch"
+                    aria-checked={t.enabled}
+                    onClick={() => update(t.id, { enabled: !t.enabled })}
+                    title={t.enabled ? "Activa" : "Pausada"}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                      t.enabled ? "bg-emerald-600" : "bg-neutral-700"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                        t.enabled ? "left-[18px]" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                  <button
+                    onClick={() => remove(t.id)}
+                    className="text-xs text-red-500 underline-offset-2 hover:underline"
+                  >
+                    Eliminar
+                  </button>
+                </div>
+              </div>
+              <div className="mt-2">
+                <label className={labelClass}>Respuesta del bot</label>
+                <textarea
+                  value={t.content}
+                  onChange={(e) => update(t.id, { content: e.target.value })}
+                  rows={3}
+                  maxLength={2000}
+                  placeholder={"¡Hola! Gracias por tu interés. Aquí va la información:\n..."}
+                  className={inputClass}
+                />
               </div>
             </div>
-            <div className="mt-2">
-              <label className={labelClass}>Respuesta del bot</label>
-              <textarea
-                value={t.content}
-                onChange={(e) => update(t.id, { content: e.target.value })}
-                rows={3}
-                maxLength={2000}
-                placeholder={"¡Hola! Gracias por tu interés. Aquí va la información:\n..."}
-                className={inputClass}
-              />
-            </div>
-          </div>
-        ))}
-        {triggers !== null && triggers.length === 0 && (
-          <p className="rounded-lg bg-neutral-950 py-6 text-center text-xs text-neutral-600">
-            Sin palabras clave todavía. Agrega la primera — por ejemplo, «INFO» con la
-            información de tus servicios.
-          </p>
-        )}
-      </div>
+          ))}
+          {triggers !== null && triggers.length === 0 && (
+            <p className="rounded-lg bg-neutral-950 py-6 text-center text-xs text-neutral-600">
+              Sin palabras clave todavía. Agrega la primera — por ejemplo, «INFO» con la
+              información de tus servicios.
+            </p>
+          )}
+        </div>
+      </fieldset>
 
       {/* Probador */}
       {triggers !== null && triggers.length > 0 && (
         <div className="mt-4 rounded-xl border border-dashed border-neutral-700 p-3">
           <label className={labelClass}>
             Probador — escribe un mensaje como si fueras el cliente
+            {dirty ? " (prueba lo que ves en pantalla, incluye cambios sin guardar)" : ""}
           </label>
           <input
             value={testText}
@@ -251,21 +420,22 @@ function KeywordTriggersCard() {
           />
           {testText.trim() && (
             <div className="mt-2 text-xs">
-              {testResult ? (
+              {testResult && !testResult.paused ? (
                 <div className="rounded-lg bg-emerald-950 p-2.5 text-emerald-400">
-                  <p className="font-semibold">
-                    ✓ Dispara «{testResult.keyword}»
-                    {!testResult.enabled ? " (está pausada)" : ""}
-                  </p>
+                  <p className="font-semibold">✓ Dispara «{testResult.trigger.keyword}»</p>
                   <p className="mt-1 whitespace-pre-wrap text-emerald-300/80">
-                    {testResult.content}
+                    {testResult.trigger.content}
                   </p>
                 </div>
+              ) : testResult?.paused ? (
+                <p className="rounded-lg bg-amber-950 p-2.5 text-amber-400">
+                  «{testResult.trigger.keyword}» dispararía con este mensaje, pero está{" "}
+                  <b>pausada</b> — actívala con el interruptor para que responda.
+                </p>
               ) : (
                 <p className="rounded-lg bg-neutral-950 p-2.5 text-neutral-500">
                   Ninguna palabra clave dispara con ese mensaje — el bot respondería con la IA
-                  (si el chat está en modo AI). Nota: si guardaste hace poco, revisa que la
-                  palabra esté activa.
+                  (si el chat está en modo AI).
                 </p>
               )}
             </div>
@@ -331,7 +501,12 @@ function QuickTemplatesCard() {
   const remove = async (id: number) => {
     setBusy(true);
     try {
-      await fetch(`/api/quick-replies/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/quick-replies/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(data?.error ?? "No se pudo eliminar la plantilla");
+        return;
+      }
       await load();
     } catch {
       setError("Error de red al eliminar");

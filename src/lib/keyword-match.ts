@@ -42,6 +42,15 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Clave canónica de una keyword para detectar duplicados EFECTIVOS: dos
+// keywords con la misma clave disparan con los mismos mensajes ("INFO",
+// "ínfo" y "¡INFO!" son la misma). La API la usa para rechazar repetidas
+// con el MISMO criterio del matcher (toLowerCase se quedaba corto).
+export function keywordDedupeKey(keyword: string): string {
+  const normalized = normalizeKeywordText(keyword);
+  return stripEdgePunctuation(normalized) || normalized;
+}
+
 // ¿El mensaje dispara este trigger? (sin mirar enabled/modo: eso lo decide
 // el caller).
 export function triggerMatches(
@@ -52,7 +61,12 @@ export function triggerMatches(
   if (!keyword) return false;
   const normalized = normalizeKeywordText(text);
   if (trigger.match === "exacta") {
-    return stripEdgePunctuation(normalized) === stripEdgePunctuation(keyword);
+    const strippedKeyword = stripEdgePunctuation(keyword);
+    // Keyword de SOLO signos/emoji (p.ej. "🔥"): el strip la dejaría vacía y
+    // "" === "" haría match con cualquier mensaje de solo símbolos ("👍").
+    // Para esas se exige igualdad estricta del texto normalizado.
+    if (!strippedKeyword) return normalized === keyword;
+    return stripEdgePunctuation(normalized) === strippedKeyword;
   }
   // 'contiene': la palabra/frase completa, delimitada (no como fragmento de
   // otra palabra: "info" no dispara con "informe").
@@ -84,9 +98,11 @@ function sanitizeTrigger(raw: unknown): KeywordTrigger | null {
   const content = typeof r.content === "string" ? r.content.trim().slice(0, 2000) : "";
   if (!keyword || !content) return null;
   return {
+    // Con tope de longitud: el id solo identifica la fila (React keys /
+    // ediciones); sin cap, un PUT malicioso podía inflar el jsonb con MBs.
     id:
       typeof r.id === "string" && r.id
-        ? r.id
+        ? r.id.slice(0, 64)
         : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     keyword,
     content,
