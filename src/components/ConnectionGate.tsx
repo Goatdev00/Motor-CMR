@@ -8,6 +8,7 @@ import ConversationList from "./ConversationList";
 import ConversationPanel from "./ConversationPanel";
 import CrmBoard from "./CrmBoard";
 import LeadsHubPanel from "./LeadsHubPanel";
+import TemplatesPanel from "./TemplatesPanel";
 import ChannelSettings from "./ChannelSettings";
 import MailingPanel from "./MailingPanel";
 import CalendarPanel from "./CalendarPanel";
@@ -30,6 +31,7 @@ const VIEW_TITLES: Record<DashboardView, string> = {
   crm: "CRM",
   leads: "Leads",
   mailing: "Mailing",
+  templates: "Plantillas",
   calendar: "Calendario",
   alarms: "Alarmas",
   team: "Equipo",
@@ -228,6 +230,8 @@ export default function ConnectionGate() {
           <LeadsHubPanel onOpenLead={handleOpenLead} />
         ) : view === "mailing" ? (
           <MailingPanel />
+        ) : view === "templates" ? (
+          <TemplatesPanel />
         ) : view === "calendar" ? (
           <CalendarPanel />
         ) : view === "alarms" ? (

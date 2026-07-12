@@ -14,6 +14,7 @@ import {
 import { generateReply } from "./llm";
 import { maybeAnalyzeLead } from "./lead-analysis";
 import { HANDOFF_PHRASE } from "./system-prompt";
+import { findMatchingTrigger, getKeywordTriggersCached } from "./templates";
 import type { Channel } from "./channels";
 
 // ── Dedup de mensajes entrantes ─────────────────────────────
@@ -184,7 +185,32 @@ export async function respondToInbound(
 
   // RE-LEER el modo: el toggle AI/HUMAN pudo cambiar desde el dashboard.
   const fresh = await getConversationById(conversationId);
-  if (!fresh || fresh.mode !== "AI") {
+  if (!fresh) return;
+
+  // Palabras clave (sección Plantillas): respuesta determinista configurada
+  // por el operador — tiene prioridad sobre el LLM y sobre la detección de
+  // "quiero un humano". Por defecto solo dispara en modo AI; cada trigger
+  // puede optar por responder también en modo HUMANO.
+  const trigger = findMatchingTrigger(await getKeywordTriggersCached(), msg.text);
+  if (trigger && (fresh.mode === "AI" || trigger.also_human)) {
+    try {
+      await msg.send(trigger.content);
+      console.log(
+        `[bot] → [${msg.channel}] ${msg.externalId} (palabra clave "${trigger.keyword}")`
+      );
+      await insertMessage(conversationId, "assistant", trigger.content);
+    } catch (err) {
+      console.error(`[bot] Falló la respuesta por palabra clave "${trigger.keyword}":`, err);
+    }
+    addLeadEvent(
+      conversationId,
+      "keyword",
+      `Respuesta automática por palabra clave "${trigger.keyword}"`
+    ).catch(() => undefined);
+    return;
+  }
+
+  if (fresh.mode !== "AI") {
     console.log(`[bot] Conversación ${conversationId} en modo HUMAN — no se responde automáticamente`);
     return;
   }

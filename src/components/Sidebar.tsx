@@ -12,6 +12,7 @@ export type DashboardView =
   | "crm"
   | "leads"
   | "mailing"
+  | "templates"
   | "calendar"
   | "alarms"
   | "team"
@@ -101,6 +102,22 @@ const ITEMS: { key: DashboardView; label: string; icon: React.ReactNode }[] = [
       <Icon
         path="M4 6h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z"
         extra={<path d="m3 7 9 6 9-6" />}
+      />
+    ),
+  },
+  {
+    key: "templates",
+    label: "Plantillas",
+    icon: (
+      <Icon
+        path="M8 4h11a1 1 0 0 1 1 1v11"
+        extra={
+          <>
+            <path d="M4 8h11a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
+            <path d="M7 13h6" />
+            <path d="M7 16.5h4" />
+          </>
+        }
       />
     ),
   },
