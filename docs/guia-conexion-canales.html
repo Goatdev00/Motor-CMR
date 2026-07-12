@@ -6,19 +6,21 @@
 <title>Guía de conexión de canales · Motor Advertising</title>
 <style>
   :root {
-    --ink: #16181d;
-    --ink-soft: #4b5563;
-    --ink-faint: #9ca3af;
-    --line: #e5e7eb;
-    --paper: #ffffff;
-    --paper-soft: #f8fafc;
-    --brand: #059669;
-    --brand-dark: #047857;
-    --brand-soft: #ecfdf5;
-    --warn: #b45309;
-    --warn-soft: #fffbeb;
-    --info: #1d4ed8;
-    --info-soft: #eff6ff;
+    /* Paleta oscura de la marca (misma del dashboard). */
+    --ink: #f5f5f5;
+    --ink-soft: #a3a3a3;
+    --ink-faint: #737373;
+    --line: #262626;
+    --paper: #171717;
+    --paper-soft: #0a0a0a;
+    --brand: #10b981;
+    --brand-dark: #34d399;
+    --brand-soft: rgba(16, 185, 129, 0.08);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.08);
+    --info: #60a5fa;
+    --info-soft: rgba(96, 165, 250, 0.08);
+    color-scheme: dark;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -33,10 +35,20 @@
 
   /* ── Portada ── */
   header.cover {
-    background: #0c0f13;
+    background: linear-gradient(180deg, #101010 0%, #0a0a0a 100%);
+    border-bottom: 1px solid var(--line);
     color: #fff;
     padding: 64px 24px 56px;
     margin-bottom: 48px;
+    position: relative;
+  }
+  header.cover::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: -1px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--brand) 30%, var(--brand) 70%, transparent);
+    opacity: .7;
   }
   .cover-inner { max-width: 860px; margin: 0 auto; }
   .brand-mark {
@@ -189,16 +201,17 @@
   code {
     font-family: Consolas, "Cascadia Code", Menlo, monospace;
     font-size: 0.88em;
-    background: #f1f5f9;
-    border: 1px solid var(--line);
+    background: #0a0a0a;
+    border: 1px solid #2e2e2e;
     border-radius: 5px;
     padding: 1px 6px;
-    color: #0f172a;
+    color: #6ee7b7;
     word-break: break-all;
   }
   pre {
-    background: #0c0f13;
-    color: #d7dde5;
+    background: #0a0a0a;
+    border: 1px solid var(--line);
+    color: #d4d4d4;
     border-radius: 10px;
     padding: 18px 20px;
     overflow-x: auto;
@@ -210,8 +223,8 @@
 
   .kbd-path {
     display: inline-block;
-    background: #f1f5f9;
-    border: 1px solid var(--line);
+    background: #262626;
+    border: 1px solid #3a3a3a;
     border-radius: 6px;
     padding: 2px 9px;
     font-size: 13.5px;
@@ -262,7 +275,7 @@
   }
   footer.doc-footer .brand-mark { color: var(--ink-soft); }
 
-  a.ext { color: var(--brand-dark); font-weight: 600; text-decoration: none; border-bottom: 1px solid rgba(5,150,105,.35); }
+  a.ext { color: var(--brand-dark); font-weight: 600; text-decoration: none; border-bottom: 1px solid rgba(52,211,153,.35); }
   a.ext:hover { border-bottom-color: var(--brand-dark); }
 
   @media (max-width: 640px) {
@@ -271,9 +284,12 @@
     ol.steps > li { padding-left: 46px; }
   }
   @media print {
-    body { background: #fff; font-size: 12.5px; }
+    /* Se conserva la estética oscura: al guardar como PDF hay que activar
+       "Gráficos de fondo" en el diálogo de impresión. */
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { background: var(--paper-soft); font-size: 12.5px; }
     header.cover { padding: 40px 0 30px; }
-    section.channel, nav.toc, .check { border: 1px solid #ccc; break-inside: avoid-page; box-shadow: none; }
+    section.channel, nav.toc, .check { break-inside: avoid-page; }
     pre { white-space: pre-wrap; }
   }
 </style>
