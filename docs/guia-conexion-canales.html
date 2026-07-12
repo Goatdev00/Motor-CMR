@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Guía de conexión de canales · Motor Advertising</title>
+<style>
+  :root {
+    --ink: #16181d;
+    --ink-soft: #4b5563;
+    --ink-faint: #9ca3af;
+    --line: #e5e7eb;
+    --paper: #ffffff;
+    --paper-soft: #f8fafc;
+    --brand: #059669;
+    --brand-dark: #047857;
+    --brand-soft: #ecfdf5;
+    --warn: #b45309;
+    --warn-soft: #fffbeb;
+    --info: #1d4ed8;
+    --info-soft: #eff6ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--paper-soft);
+    line-height: 1.65;
+    font-size: 16px;
+  }
+  .page { max-width: 860px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* ── Portada ── */
+  header.cover {
+    background: #0c0f13;
+    color: #fff;
+    padding: 64px 24px 56px;
+    margin-bottom: 48px;
+  }
+  .cover-inner { max-width: 860px; margin: 0 auto; }
+  .brand-mark {
+    font-weight: 800;
+    font-style: italic;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 14px;
+    color: #d1d5db;
+  }
+  .brand-mark .slash { color: #4b5563; }
+  header.cover h1 {
+    font-size: 40px;
+    line-height: 1.15;
+    font-weight: 800;
+    margin-top: 18px;
+    letter-spacing: -0.01em;
+  }
+  header.cover p.subtitle {
+    margin-top: 14px;
+    font-size: 17px;
+    color: #b6bcc6;
+    max-width: 560px;
+  }
+  .cover-meta {
+    margin-top: 28px;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: #8a919c;
+  }
+  .cover-meta span strong { color: #d1d5db; font-weight: 600; }
+
+  /* ── Índice ── */
+  nav.toc {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 28px 32px;
+    margin-bottom: 48px;
+  }
+  nav.toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-faint); margin-bottom: 14px; }
+  nav.toc ol { list-style: none; counter-reset: toc; }
+  nav.toc li { counter-increment: toc; border-bottom: 1px solid var(--line); }
+  nav.toc li:last-child { border-bottom: none; }
+  nav.toc a {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 10px 2px;
+    color: var(--ink);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  nav.toc a:hover { color: var(--brand-dark); }
+  nav.toc a::before {
+    content: counter(toc, decimal-leading-zero);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--brand);
+    font-variant-numeric: tabular-nums;
+  }
+  nav.toc a .toc-note { margin-left: auto; font-size: 12.5px; font-weight: 400; color: var(--ink-faint); text-align: right; }
+
+  /* ── Secciones ── */
+  section.channel {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 40px 44px;
+    margin-bottom: 32px;
+  }
+  .channel-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 6px; }
+  .channel-num {
+    flex-shrink: 0;
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    background: var(--brand);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 17px;
+  }
+  section.channel h2 { font-size: 24px; font-weight: 750; letter-spacing: -0.01em; }
+  .channel-head p.lead { color: var(--ink-soft); font-size: 15px; margin-top: 4px; }
+
+  .req {
+    background: var(--info-soft);
+    border-left: 3px solid var(--info);
+    border-radius: 0 10px 10px 0;
+    padding: 14px 18px;
+    margin: 20px 0 8px;
+    font-size: 14.5px;
+  }
+  .req strong { color: var(--info); display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+  .req ul { margin: 4px 0 0 18px; }
+
+  .warn {
+    background: var(--warn-soft);
+    border-left: 3px solid var(--warn);
+    border-radius: 0 10px 10px 0;
+    padding: 14px 18px;
+    margin: 18px 0;
+    font-size: 14.5px;
+  }
+  .warn strong { color: var(--warn); display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+
+  .tip {
+    background: var(--brand-soft);
+    border-left: 3px solid var(--brand);
+    border-radius: 0 10px 10px 0;
+    padding: 14px 18px;
+    margin: 18px 0;
+    font-size: 14.5px;
+  }
+  .tip strong { color: var(--brand-dark); display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+
+  ol.steps { list-style: none; counter-reset: step; margin-top: 22px; }
+  ol.steps > li {
+    counter-increment: step;
+    position: relative;
+    padding: 0 0 26px 56px;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0; top: -2px;
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--paper);
+    border: 2px solid var(--brand);
+    color: var(--brand-dark);
+    font-weight: 800;
+    font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  ol.steps > li::after {
+    content: "";
+    position: absolute;
+    left: 16px; top: 36px; bottom: 4px;
+    width: 2px;
+    background: var(--line);
+  }
+  ol.steps > li:last-child::after { display: none; }
+  ol.steps h3 { font-size: 16.5px; font-weight: 700; margin-bottom: 4px; }
+  ol.steps p, ol.steps ul { font-size: 15px; color: var(--ink-soft); }
+  ol.steps ul { margin: 8px 0 0 20px; }
+  ol.steps ul li { margin-bottom: 4px; }
+
+  code {
+    font-family: Consolas, "Cascadia Code", Menlo, monospace;
+    font-size: 0.88em;
+    background: #f1f5f9;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 6px;
+    color: #0f172a;
+    word-break: break-all;
+  }
+  pre {
+    background: #0c0f13;
+    color: #d7dde5;
+    border-radius: 10px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 12px 0;
+  }
+  pre code { background: none; border: none; color: inherit; padding: 0; }
+
+  .kbd-path {
+    display: inline-block;
+    background: #f1f5f9;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 9px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  table.fields {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  table.fields th, table.fields td {
+    text-align: left;
+    padding: 9px 12px;
+    border: 1px solid var(--line);
+    vertical-align: top;
+  }
+  table.fields th { background: var(--paper-soft); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); }
+  .table-scroll { overflow-x: auto; }
+
+  .check {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 32px 40px;
+    margin-bottom: 32px;
+  }
+  .check h2 { font-size: 20px; margin-bottom: 14px; }
+  .check ul { list-style: none; }
+  .check li { padding: 8px 0 8px 34px; position: relative; border-bottom: 1px dashed var(--line); font-size: 15px; }
+  .check li:last-child { border-bottom: none; }
+  .check li::before {
+    content: "";
+    position: absolute; left: 2px; top: 12px;
+    width: 16px; height: 16px;
+    border: 2px solid var(--brand);
+    border-radius: 5px;
+  }
+
+  footer.doc-footer {
+    text-align: center;
+    color: var(--ink-faint);
+    font-size: 13px;
+    padding-top: 12px;
+  }
+  footer.doc-footer .brand-mark { color: var(--ink-soft); }
+
+  a.ext { color: var(--brand-dark); font-weight: 600; text-decoration: none; border-bottom: 1px solid rgba(5,150,105,.35); }
+  a.ext:hover { border-bottom-color: var(--brand-dark); }
+
+  @media (max-width: 640px) {
+    section.channel { padding: 28px 20px; }
+    header.cover h1 { font-size: 30px; }
+    ol.steps > li { padding-left: 46px; }
+  }
+  @media print {
+    body { background: #fff; font-size: 12.5px; }
+    header.cover { padding: 40px 0 30px; }
+    section.channel, nav.toc, .check { border: 1px solid #ccc; break-inside: avoid-page; box-shadow: none; }
+    pre { white-space: pre-wrap; }
+  }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <div class="cover-inner">
+    <p class="brand-mark"><span class="slash">/</span><span class="slash">/</span> MOTOR ADVERT<em>ISI</em>NG</p>
+    <h1>Guía de conexión de canales</h1>
+    <p class="subtitle">Paso a paso para conectar WhatsApp, Facebook Messenger, Instagram, correo electrónico y sus aplicaciones externas a la plataforma de ventas multicanal.</p>
+    <div class="cover-meta">
+      <span><strong>Plataforma:</strong> Agente de ventas multicanal</span>
+      <span><strong>Versión del documento:</strong> 1.0</span>
+      <span><strong>Fecha:</strong> Julio 2026</span>
+    </div>
+  </div>
+</header>
+
+<div class="page">
+
+  <nav class="toc">
+    <h2>Contenido</h2>
+    <ol>
+      <li><a href="#antes">Antes de empezar<span class="toc-note">acceso y requisitos</span></a></li>
+      <li><a href="#whatsapp-qr">WhatsApp por código QR<span class="toc-note">5 minutos</span></a></li>
+      <li><a href="#whatsapp-api">WhatsApp Business (API oficial de Meta)<span class="toc-note">30–60 minutos</span></a></li>
+      <li><a href="#messenger">Facebook Messenger<span class="toc-note">20–30 minutos</span></a></li>
+      <li><a href="#instagram">Instagram (mensajes directos)<span class="toc-note">20–30 minutos</span></a></li>
+      <li><a href="#webhook">Webhook de Meta (paso común)<span class="toc-note">requerido para 3, 4 y 5</span></a></li>
+      <li><a href="#correo">Correo electrónico (SMTP)<span class="toc-note">10 minutos</span></a></li>
+      <li><a href="#api-crm">API del CRM — conectar formularios y otras apps<span class="toc-note">para su desarrollador</span></a></li>
+      <li><a href="#checklist">Lista de verificación final</a></li>
+      <li><a href="#soporte">Problemas frecuentes y soporte</a></li>
+    </ol>
+  </nav>
+
+  <!-- ══════════════ 1. ANTES DE EMPEZAR ══════════════ -->
+  <section class="channel" id="antes">
+    <div class="channel-head">
+      <div class="channel-num">1</div>
+      <div>
+        <h2>Antes de empezar</h2>
+        <p class="lead">Lo que necesita tener a la mano antes de conectar cualquier canal.</p>
+      </div>
+    </div>
+
+    <div class="req">
+      <strong>Requisitos generales</strong>
+      <ul>
+        <li>La <b>dirección web del dashboard</b> que le fue entregada (en esta guía la llamaremos <code>https://SU-DOMINIO</code>).</li>
+        <li>Su <b>usuario y contraseña</b> de acceso. Los crea el administrador en la pestaña <span class="kbd-path">Equipo</span>.</li>
+        <li>Para modificar canales y cuentas se requiere un usuario con rol <b>Admin</b>.</li>
+      </ul>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Ingrese al dashboard</h3>
+        <p>Abra <code>https://SU-DOMINIO</code> en su navegador e inicie sesión con su usuario y contraseña.</p>
+      </li>
+      <li>
+        <h3>Ubique las dos pestañas de configuración</h3>
+        <p>Todo lo de esta guía se hace en dos lugares de la barra lateral izquierda:</p>
+        <ul>
+          <li><span class="kbd-path">Canales</span> — activar/desactivar cada canal, tokens de Meta, webhook y claves de la API.</li>
+          <li><span class="kbd-path">Equipo</span> — cuentas de WhatsApp por QR (vincular, generar QR, desvincular).</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Entienda el interruptor de cada canal</h3>
+        <p>Cada tarjeta de la pestaña <span class="kbd-path">Canales</span> tiene un interruptor a la derecha: <b>verde = canal activo</b>, gris = apagado. Apagar un canal detiene sus envíos y respuestas sin borrar la configuración.</p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ══════════════ 2. WHATSAPP QR ══════════════ -->
+  <section class="channel" id="whatsapp-qr">
+    <div class="channel-head">
+      <div class="channel-num">2</div>
+      <div>
+        <h2>WhatsApp por código QR</h2>
+        <p class="lead">La forma más rápida de conectar: vincula un número de WhatsApp existente escaneando un código QR, igual que WhatsApp Web. Puede conectar varias cuentas a la vez (una por vendedor, por ejemplo).</p>
+      </div>
+    </div>
+
+    <div class="req">
+      <strong>Necesita</strong>
+      <ul>
+        <li>Un teléfono con WhatsApp activo y el número que quiere conectar.</li>
+        <li>El teléfono con conexión a internet durante el uso diario.</li>
+      </ul>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Verifique que el canal esté encendido</h3>
+        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“WhatsApp (QR / Baileys)”</b>, confirme que el interruptor esté en verde. Este es el interruptor maestro: si está apagado, ninguna cuenta por QR funciona.</p>
+      </li>
+      <li>
+        <h3>Cree la cuenta en Equipo</h3>
+        <p>Vaya a la pestaña <span class="kbd-path">Equipo</span>, sección <b>Cuentas de WhatsApp</b>. Escriba un nombre identificable (por ejemplo <i>“Ventas 1”</i> o el nombre del asesor) y pulse <b>+ Agregar cuenta</b>.</p>
+      </li>
+      <li>
+        <h3>Genere el código QR</h3>
+        <p>En la tarjeta de la cuenta recién creada pulse <b>Generar QR</b>. En unos segundos aparecerá el código en pantalla.</p>
+      </li>
+      <li>
+        <h3>Escanee desde el teléfono</h3>
+        <p>En el teléfono que tiene el número:</p>
+        <ul>
+          <li>Abra WhatsApp → menú <b>⋮</b> (Android) o <b>Ajustes</b> (iPhone).</li>
+          <li>Entre a <b>Dispositivos vinculados</b> → <b>Vincular un dispositivo</b>.</li>
+          <li>Apunte la cámara al QR del dashboard.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Confirme la conexión</h3>
+        <p>La tarjeta de la cuenta pasará a estado <b>Conectado</b> y mostrará el número vinculado. En la parte superior del dashboard el indicador cambiará a <b>“Conectado”</b>. Desde ese momento el agente responde los mensajes que lleguen a ese número.</p>
+      </li>
+    </ol>
+
+    <div class="tip">
+      <strong>Consejos</strong>
+      El teléfono debe permanecer encendido y con internet (WhatsApp exige que el dispositivo principal se conecte periódicamente). · Para soltar el número use <b>Desvincular</b> en la misma tarjeta: cierra la sesión en WhatsApp y deja la cuenta lista para un QR nuevo.
+    </div>
+
+    <div class="warn">
+      <strong>Importante</strong>
+      Esta modalidad usa la conexión “multi-dispositivo” de WhatsApp estándar (no es la API oficial). Para operaciones de alto volumen o misión crítica, considere también el canal de la sección 3. El mismo número <u>no</u> puede estar a la vez en QR y en la API oficial.
+    </div>
+  </section>
+
+  <!-- ══════════════ 3. WHATSAPP API ══════════════ -->
+  <section class="channel" id="whatsapp-api">
+    <div class="channel-head">
+      <div class="channel-num">3</div>
+      <div>
+        <h2>WhatsApp Business — API oficial de Meta</h2>
+        <p class="lead">El canal oficial (Cloud API). Recomendado para volumen alto y estabilidad a largo plazo. Requiere una cuenta de Meta para desarrolladores y un número dedicado.</p>
+      </div>
+    </div>
+
+    <div class="req">
+      <strong>Necesita</strong>
+      <ul>
+        <li>Una cuenta en <a class="ext" href="https://developers.facebook.com">developers.facebook.com</a> asociada a su empresa (Meta Business).</li>
+        <li>Un número de teléfono que <b>no esté registrado</b> en ninguna app de WhatsApp (ni personal ni Business, ni conectado por QR).</li>
+        <li>Haber configurado el <a class="ext" href="#webhook">Webhook de Meta (sección 6)</a> para recibir mensajes entrantes.</li>
+      </ul>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Cree la aplicación en Meta</h3>
+        <p>En <a class="ext" href="https://developers.facebook.com">developers.facebook.com</a> → <b>My Apps</b> → <b>Create App</b>. Elija el tipo <b>Business</b> y vincúlela al portafolio comercial (Meta Business) de su empresa.</p>
+      </li>
+      <li>
+        <h3>Agregue el producto WhatsApp</h3>
+        <p>Dentro de la app, en el panel de productos, pulse <b>Add product</b> → <b>WhatsApp</b> → <b>Set up</b>. Meta creará (o le pedirá elegir) una <b>WhatsApp Business Account (WABA)</b>.</p>
+      </li>
+      <li>
+        <h3>Registre su número</h3>
+        <p>En <b>WhatsApp → API Setup</b>, agregue su número de teléfono y verifíquelo con el código SMS/llamada. Anote el <b>Phone Number ID</b> que aparece bajo el número (es un ID numérico largo, no es el número de teléfono).</p>
+      </li>
+      <li>
+        <h3>Genere un token permanente</h3>
+        <p>El token temporal de “API Setup” caduca en 24 horas; para producción cree uno permanente:</p>
+        <ul>
+          <li>Vaya a <a class="ext" href="https://business.facebook.com/settings">Meta Business Settings</a> → <b>Users → System users</b> → <b>Add</b> (rol Admin).</li>
+          <li>Con el usuario de sistema creado: <b>Add assets</b> → asigne la app y la WhatsApp Business Account.</li>
+          <li>Pulse <b>Generate new token</b>, elija su app y marque los permisos <code>whatsapp_business_messaging</code> y <code>whatsapp_business_management</code>.</li>
+          <li>Copie el token (empieza por <code>EAAG…</code>) y guárdelo en un lugar seguro: no se vuelve a mostrar.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Pegue las credenciales en el dashboard</h3>
+        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“WhatsApp Business (API oficial de Meta)”</b>:</p>
+        <div class="table-scroll"><table class="fields">
+          <tr><th>Campo</th><th>Qué va ahí</th></tr>
+          <tr><td><b>Phone Number ID</b></td><td>El ID numérico del paso 3.</td></tr>
+          <tr><td><b>Access Token</b></td><td>El token permanente del paso 4 (<code>EAAG…</code>).</td></tr>
+        </table></div>
+        <p>Pulse <b>Guardar</b> y luego <b>Probar conexión</b>: debe responder con el nombre/número verificado.</p>
+      </li>
+      <li>
+        <h3>Encienda el canal y suscriba el webhook</h3>
+        <p>Active el interruptor de la tarjeta y complete la <a class="ext" href="#webhook">sección 6</a> suscribiendo el objeto <b>WhatsApp Business Account</b> con el campo <code>messages</code>. Envíe un mensaje de prueba al número: debe aparecer en la pestaña <span class="kbd-path">Chats</span>.</p>
+      </li>
+    </ol>
+
+    <div class="warn">
+      <strong>Importante</strong>
+      Con la API oficial, WhatsApp solo permite responder libremente dentro de las <b>24 horas</b> siguientes al último mensaje del cliente. Fuera de esa ventana se requieren plantillas aprobadas por Meta.
+    </div>
+  </section>
+
+  <!-- ══════════════ 4. MESSENGER ══════════════ -->
+  <section class="channel" id="messenger">
+    <div class="channel-head">
+      <div class="channel-num">4</div>
+      <div>
+        <h2>Facebook Messenger</h2>
+        <p class="lead">Conecta los mensajes que llegan a su página de Facebook para que el agente los reciba y responda desde el dashboard.</p>
+      </div>
+    </div>
+
+    <div class="req">
+      <strong>Necesita</strong>
+      <ul>
+        <li>Una <b>página de Facebook</b> de la que sea administrador.</li>
+        <li>La misma app de Meta de la sección 3 (o una nueva de tipo Business).</li>
+        <li>El <a class="ext" href="#webhook">Webhook de Meta (sección 6)</a> configurado.</li>
+      </ul>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Agregue el producto Messenger a su app</h3>
+        <p>En <a class="ext" href="https://developers.facebook.com">developers.facebook.com</a>, dentro de su app: <b>Add product</b> → <b>Messenger</b> → <b>Set up</b>.</p>
+      </li>
+      <li>
+        <h3>Conecte su página y genere el token</h3>
+        <p>En <b>Messenger → Messenger API Settings</b>:</p>
+        <ul>
+          <li>Pulse <b>Connect</b> (o <b>Add or remove pages</b>) y elija su página de Facebook.</li>
+          <li>Pulse <b>Generate token</b> junto a la página conectada. Este es el <b>Page Access Token</b> (<code>EAAG…</code>).</li>
+          <li>El token debe incluir el permiso <code>pages_messaging</code> (Meta lo solicita al conectar la página).</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Pegue el token en el dashboard</h3>
+        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“Facebook Messenger”</b>, pegue el <b>Page Access Token</b>, pulse <b>Guardar</b> y luego <b>Probar conexión</b> (debe mostrar el nombre de la página).</p>
+      </li>
+      <li>
+        <h3>Suscriba el webhook y active el canal</h3>
+        <p>En la <a class="ext" href="#webhook">sección 6</a>, suscriba el objeto <b>Page</b> con el campo <code>messages</code>. Encienda el interruptor de la tarjeta. Escriba a su página desde otro perfil: el mensaje debe aparecer en <span class="kbd-path">Chats</span> con la etiqueta azul <b>Messenger</b>.</p>
+      </li>
+    </ol>
+
+    <div class="tip">
+      <strong>Nota</strong>
+      Si la app de Meta está “In development”, solo los usuarios con rol en la app (administradores/testers) pueden escribirle a la página a través de la API. Para el público general, la app debe pasar a modo <b>Live</b> con el permiso <code>pages_messaging</code> aprobado en App Review.
+    </div>
+  </section>
+
+  <!-- ══════════════ 5. INSTAGRAM ══════════════ -->
+  <section class="channel" id="instagram">
+    <div class="channel-head">
+      <div class="channel-num">5</div>
+      <div>
+        <h2>Instagram — mensajes directos</h2>
+        <p class="lead">Recibe y responde los DMs de su cuenta de Instagram profesional desde el mismo dashboard.</p>
+      </div>
+    </div>
+
+    <div class="req">
+      <strong>Necesita</strong>
+      <ul>
+        <li>Una cuenta de Instagram <b>profesional</b> (Business o Creator) <b>vinculada a su página de Facebook</b>.</li>
+        <li>La misma app de Meta y el <a class="ext" href="#webhook">webhook de la sección 6</a>.</li>
+      </ul>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Vincule Instagram a su página (si no lo está)</h3>
+        <p>En su página de Facebook: <b>Configuración</b> → <b>Cuentas vinculadas</b> → <b>Instagram</b> → conecte la cuenta profesional.</p>
+      </li>
+      <li>
+        <h3>Permita el acceso a mensajes en Instagram</h3>
+        <p>En la app de Instagram del teléfono: <b>Configuración</b> → <b>Privacidad → Mensajes</b> (o <b>Herramientas profesionales</b>) → active <b>“Permitir el acceso a los mensajes”</b> para herramientas conectadas. Sin esto Meta no entrega los DMs a la API.</p>
+      </li>
+      <li>
+        <h3>Habilite Instagram en su app de Meta</h3>
+        <p>En <a class="ext" href="https://developers.facebook.com">developers.facebook.com</a> → su app → producto <b>Messenger</b> → sección <b>Instagram Settings</b> (o producto <b>Instagram</b>): conecte la cuenta y asegúrese de que el token de la página incluya el permiso <code>instagram_manage_messages</code>.</p>
+      </li>
+      <li>
+        <h3>Pegue el token en el dashboard</h3>
+        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“Instagram (DMs)”</b>, pegue el <b>Page Access Token</b> (el mismo de Messenger sirve si incluye el permiso de Instagram), pulse <b>Guardar</b> y <b>Probar conexión</b>.</p>
+      </li>
+      <li>
+        <h3>Suscriba el webhook y active el canal</h3>
+        <p>En la <a class="ext" href="#webhook">sección 6</a>, suscriba el objeto <b>Instagram</b> con el campo <code>messages</code>. Encienda el interruptor. Envíe un DM de prueba: debe aparecer en <span class="kbd-path">Chats</span> con la etiqueta rosada <b>Instagram</b>.</p>
+      </li>
+    </ol>
+
+    <div class="warn">
+      <strong>Importante</strong>
+      Igual que en Messenger, mientras la app esté “In development” solo los testers pueden probar. El permiso <code>instagram_manage_messages</code> requiere App Review para uso público. La API no permite <u>iniciar</u> conversaciones en frío: solo responder a quien le escribe.
+    </div>
+  </section>
+
+  <!-- ══════════════ 6. WEBHOOK ══════════════ -->
+  <section class="channel" id="webhook">
+    <div class="channel-head">
+      <div class="channel-num">6</div>
+      <div>
+        <h2>Webhook de Meta — paso común</h2>
+        <p class="lead">El webhook es la “dirección de entrega” a la que Meta envía cada mensaje entrante de WhatsApp API, Messenger e Instagram. Se configura una sola vez y sirve para los tres canales.</p>
+      </div>
+    </div>
+
+    <div class="req">
+      <strong>Necesita</strong>
+      <ul>
+        <li>El dashboard publicado en una dirección <b>HTTPS pública</b> (su dominio de producción).</li>
+        <li>Acceso a la app de Meta (secciones 3–5).</li>
+      </ul>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Copie los datos del dashboard</h3>
+        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“Webhook de Meta (compartido)”</b>:</p>
+        <ul>
+          <li>La <b>URL del webhook</b> aparece ya calculada: <code>https://SU-DOMINIO/api/webhooks/meta</code></li>
+          <li>En <b>Verify Token</b> pulse <b>Generar</b> (o escriba una clave secreta propia) y cópiela.</li>
+          <li>Opcional pero recomendado: pegue el <b>App Secret</b> de Meta (<b>App settings → Basic → App secret</b>) para validar la firma de cada entrega.</li>
+          <li>Pulse <b>Guardar webhook</b>.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Registre el webhook en Meta</h3>
+        <p>En <a class="ext" href="https://developers.facebook.com">developers.facebook.com</a> → su app → <b>Webhooks</b> (menú lateral):</p>
+        <ul>
+          <li>Pulse <b>Add subscription / Edit subscription</b> del objeto que corresponda.</li>
+          <li><b>Callback URL:</b> la URL del paso 1.</li>
+          <li><b>Verify token:</b> exactamente el mismo del paso 1.</li>
+          <li>Pulse <b>Verify and save</b> — si el token coincide, Meta confirma en verde.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Suscriba el campo <code>messages</code> en cada objeto</h3>
+        <p>Repita la suscripción para cada canal que use:</p>
+        <div class="table-scroll"><table class="fields">
+          <tr><th>Canal</th><th>Objeto en Meta</th><th>Campo a suscribir</th></tr>
+          <tr><td>WhatsApp API</td><td><b>WhatsApp Business Account</b></td><td><code>messages</code></td></tr>
+          <tr><td>Messenger</td><td><b>Page</b></td><td><code>messages</code></td></tr>
+          <tr><td>Instagram</td><td><b>Instagram</b></td><td><code>messages</code></td></tr>
+        </table></div>
+        <p>En Messenger además verifique, dentro del producto Messenger, que su página esté suscrita a los webhooks de la app (<b>Add subscriptions</b> junto a la página).</p>
+      </li>
+    </ol>
+
+    <div class="tip">
+      <strong>Para pruebas en un computador local</strong>
+      Si el dashboard corre en un equipo local (sin dominio público), cree un túnel temporal, por ejemplo: <code>cloudflared tunnel --url http://localhost:3000</code>, y use la URL <code>https://…trycloudflare.com/api/webhooks/meta</code> como Callback URL. Al cambiar de túnel hay que actualizar la URL en Meta.
+    </div>
+  </section>
+
+  <!-- ══════════════ 7. CORREO ══════════════ -->
+  <section class="channel" id="correo">
+    <div class="channel-head">
+      <div class="channel-num">7</div>
+      <div>
+        <h2>Correo electrónico (SMTP)</h2>
+        <p class="lead">Habilita los envíos de correo: campañas desde <b>Mailing</b>, contactos individuales o masivos desde <b>Leads</b> y alarmas por email. Funciona con Gmail, Outlook o el correo de su propio dominio.</p>
+      </div>
+    </div>
+
+    <div class="req">
+      <strong>Necesita</strong>
+      <ul>
+        <li>Una cuenta de correo para enviar (recomendado: una dedicada, p. ej. <code>ventas@su-empresa.com</code>).</li>
+        <li>Si es <b>Gmail</b>: la verificación en dos pasos activa, para poder crear una “contraseña de aplicación”.</li>
+      </ul>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Si usa Gmail: cree una contraseña de aplicación</h3>
+        <ul>
+          <li>Entre a <a class="ext" href="https://myaccount.google.com">myaccount.google.com</a> → <b>Seguridad</b>.</li>
+          <li>Active la <b>Verificación en dos pasos</b> si no la tiene.</li>
+          <li>Busque <b>“Contraseñas de aplicaciones”</b> (App passwords), cree una nueva con el nombre “Dashboard ventas” y copie la clave de 16 letras que genera Google.</li>
+          <li>Esa clave (no su contraseña normal) es la que usará en el paso siguiente.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Complete la cuenta en la pestaña Mailing</h3>
+        <p>En <span class="kbd-path">Mailing</span>, tarjeta <b>“Cuenta de correo (SMTP)”</b>:</p>
+        <div class="table-scroll"><table class="fields">
+          <tr><th>Campo</th><th>Gmail</th><th>Outlook / Microsoft 365</th></tr>
+          <tr><td><b>Servidor SMTP</b></td><td><code>smtp.gmail.com</code></td><td><code>smtp.office365.com</code></td></tr>
+          <tr><td><b>Puerto</b></td><td><code>465</code></td><td><code>587</code></td></tr>
+          <tr><td><b>Usuario / correo</b></td><td>su dirección completa</td><td>su dirección completa</td></tr>
+          <tr><td><b>Contraseña</b></td><td>contraseña de aplicación (16 letras)</td><td>su contraseña o clave de app</td></tr>
+          <tr><td><b>Nombre del remitente</b></td><td colspan="2">Lo que verá el cliente, p. ej. <i>Motor Advertising</i> (opcional)</td></tr>
+          <tr><td><b>Correo remitente</b></td><td colspan="2">Si difiere del usuario (opcional)</td></tr>
+          <tr><td><b>Límite por hora / día</b></td><td colspan="2">Opcionales. Sugerido en Gmail: 60/hora y 400/día para cuidar la reputación</td></tr>
+        </table></div>
+      </li>
+      <li>
+        <h3>Guarde, pruebe y encienda</h3>
+        <p>Pulse <b>Guardar cuenta</b> → <b>Probar conexión</b> (debe responder “Conectado a …”). Luego active el interruptor verde de la tarjeta.</p>
+      </li>
+      <li>
+        <h3>Configure el “Responder a” de la sección Leads</h3>
+        <p>Al enviar correos desde <span class="kbd-path">Leads</span> → <b>Contactar</b> → pestaña <b>Correo</b>, el campo <b>“Responder a”</b> define a qué buzón llegan las respuestas de los clientes (puede ser distinto del remitente). Escriba el correo deseado y marque <b>“Guardar como predeterminado”</b> para que quede fijo en los próximos envíos.</p>
+      </li>
+    </ol>
+
+    <div class="tip">
+      <strong>Cómo se envían</strong>
+      Los correos no salen todos de golpe: entran a una cola que el sistema despacha respetando los límites configurados. El estado de cada envío (pendiente / enviado / fallido) se ve al final de la pestaña <span class="kbd-path">Mailing</span>.
+    </div>
+  </section>
+
+  <!-- ══════════════ 8. API CRM ══════════════ -->
+  <section class="channel" id="api-crm">
+    <div class="channel-head">
+      <div class="channel-num">8</div>
+      <div>
+        <h2>API del CRM — conectar formularios y otras aplicaciones</h2>
+        <p class="lead">Permite que sus landings, formularios web o cualquier sistema externo creen leads directamente en el CRM. Esta sección es para su desarrollador o proveedor web.</p>
+      </div>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Genere una clave de API</h3>
+        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“API del CRM”</b> (solo Admin): escriba un nombre descriptivo (p. ej. <i>“Landing campaña julio”</i>) y pulse <b>Generar clave</b>.</p>
+      </li>
+      <li>
+        <h3>Copie la clave de inmediato</h3>
+        <p>La clave completa (<code>agente_…</code>) <b>solo se muestra una vez</b>. Cópiela y entréguela a su desarrollador de forma segura. Si se pierde, revoque esa clave y genere otra.</p>
+      </li>
+      <li>
+        <h3>Integre el formulario</h3>
+        <p>Cada vez que alguien llene el formulario, el sitio debe hacer una petición <code>POST</code> con la clave en el encabezado <code>X-API-Key</code>:</p>
+        <pre><code>curl -X POST https://SU-DOMINIO/api/public/leads \
+  -H "X-API-Key: agente_xxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":    "Juan Pérez",
+    "phone":   "573001112233",
+    "email":   "juan@empresa.com",
+    "company": "Empresa SAS",
+    "source":  "landing-julio",
+    "message": "Quiero información del servicio"
+  }'</code></pre>
+        <div class="table-scroll"><table class="fields">
+          <tr><th>Campo</th><th>Obligatorio</th><th>Detalle</th></tr>
+          <tr><td><code>name</code></td><td rowspan="3">Al menos uno de los tres</td><td>Nombre del contacto.</td></tr>
+          <tr><td><code>phone</code></td><td>Solo dígitos, con indicativo de país (ej. <code>57300…</code>). Con teléfono, el lead queda listo para WhatsApp y se activa el enrutamiento al vendedor.</td></tr>
+          <tr><td><code>email</code></td><td>Correo del contacto (sirve para las campañas de la sección Leads).</td></tr>
+          <tr><td><code>company</code></td><td>No</td><td>Empresa del contacto.</td></tr>
+          <tr><td><code>source</code></td><td>No</td><td>Origen del lead (nombre de la campaña o landing).</td></tr>
+          <tr><td><code>message</code></td><td>No</td><td>Lo que escribió el cliente en el formulario.</td></tr>
+        </table></div>
+      </li>
+      <li>
+        <h3>Verifique</h3>
+        <p>Los leads creados aparecen al instante en las pestañas <span class="kbd-path">Leads</span> y <span class="kbd-path">CRM</span>. Si el mismo contacto llega dos veces, el sistema lo fusiona en lugar de duplicarlo.</p>
+      </li>
+    </ol>
+
+    <div class="warn">
+      <strong>Seguridad</strong>
+      Cada clave tiene un límite de 120 peticiones por hora. Nunca publique la clave en el código visible del navegador: la petición debe hacerse desde el servidor del sitio web. Revoque cualquier clave comprometida desde la misma tarjeta.
+    </div>
+  </section>
+
+  <!-- ══════════════ CHECKLIST ══════════════ -->
+  <div class="check" id="checklist">
+    <h2>Lista de verificación final</h2>
+    <ul>
+      <li>Puedo iniciar sesión en el dashboard y veo las pestañas Canales y Equipo.</li>
+      <li>WhatsApp QR: la cuenta figura “Conectado” en Equipo y un mensaje de prueba aparece en Chats.</li>
+      <li>WhatsApp API: “Probar conexión” responde bien y un mensaje al número llega a Chats (webhook activo).</li>
+      <li>Messenger: “Probar conexión” muestra el nombre de la página y un mensaje de prueba llega a Chats.</li>
+      <li>Instagram: un DM de prueba llega a Chats con la etiqueta Instagram.</li>
+      <li>Webhook de Meta: verificado en verde en developers.facebook.com, campo <code>messages</code> suscrito en cada objeto.</li>
+      <li>Correo: “Probar conexión” exitoso, interruptor encendido y un correo de prueba enviado desde Mailing o Leads.</li>
+      <li>“Responder a” predeterminado guardado en la sección Leads.</li>
+      <li>API del CRM: clave generada, entregada al desarrollador y un lead de prueba creado.</li>
+    </ul>
+  </div>
+
+  <!-- ══════════════ SOPORTE ══════════════ -->
+  <section class="channel" id="soporte">
+    <div class="channel-head">
+      <div class="channel-num">✓</div>
+      <div>
+        <h2>Problemas frecuentes</h2>
+        <p class="lead">Revisiones rápidas antes de contactar soporte.</p>
+      </div>
+    </div>
+
+    <div class="table-scroll"><table class="fields">
+      <tr><th>Síntoma</th><th>Revisión</th></tr>
+      <tr>
+        <td>El QR no aparece o la cuenta queda “Desconectado”.</td>
+        <td>Verifique que el interruptor maestro “WhatsApp (QR / Baileys)” esté encendido en Canales y que la cuenta esté habilitada en Equipo. Pulse “Generar QR” de nuevo: cada código caduca en ~60 segundos.</td>
+      </tr>
+      <tr>
+        <td>WhatsApp QR se desconecta con frecuencia.</td>
+        <td>El teléfono dueño del número debe tener internet y WhatsApp abierto ocasionalmente. Revise que no haya cerrado la sesión desde “Dispositivos vinculados”.</td>
+      </tr>
+      <tr>
+        <td>Los mensajes de Messenger/Instagram/WhatsApp API no llegan a Chats.</td>
+        <td>Casi siempre es el webhook: confirme la verificación en verde en Meta, la suscripción del campo <code>messages</code> en el objeto correcto y que el Verify Token del dashboard sea idéntico al de Meta.</td>
+      </tr>
+      <tr>
+        <td>“Probar conexión” de un canal de Meta falla.</td>
+        <td>El token pudo caducar o carecer de permisos. Genere uno nuevo (permanente, vía System User para WhatsApp API) y guárdelo de nuevo.</td>
+      </tr>
+      <tr>
+        <td>Los correos quedan “Pendiente” y no salen.</td>
+        <td>Confirme que el interruptor del correo esté encendido en Mailing y que “Probar conexión” funcione. Si configuró límites por hora/día, la cola espera a que se libere el cupo.</td>
+      </tr>
+      <tr>
+        <td>Gmail rechaza la contraseña.</td>
+        <td>Debe usar la <b>contraseña de aplicación</b> de 16 letras (no la contraseña normal de la cuenta), con la verificación en dos pasos activa.</td>
+      </tr>
+      <tr>
+        <td>El formulario web no crea leads.</td>
+        <td>Revise que la clave viaje en el encabezado <code>X-API-Key</code>, que la petición sea <code>POST</code> con <code>Content-Type: application/json</code> y que incluya al menos nombre, teléfono o correo.</td>
+      </tr>
+    </table></div>
+
+    <div class="tip">
+      <strong>Soporte</strong>
+      Si después de estas revisiones algo no funciona, escríbanos a <a class="ext" href="mailto:motoradvertisingservice@gmail.com">motoradvertisingservice@gmail.com</a> indicando el canal, el paso en el que se detuvo y una captura de pantalla del error.
+    </div>
+  </section>
+
+  <footer class="doc-footer">
+    <p class="brand-mark"><span class="slash">/</span><span class="slash">/</span> MOTOR ADVERT<em>ISI</em>NG</p>
+    <p style="margin-top:6px;">Guía de conexión de canales · Documento para clientes · Julio 2026</p>
+  </footer>
+
+</div>
+</body>
+</html>
