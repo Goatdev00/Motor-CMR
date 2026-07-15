@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getConversationById, getLeadNotes } from "@/lib/db";
-import { getModel, getOpenAI } from "@/lib/llm";
+import { getLlm, maxTokensParam } from "@/lib/llm";
 
 export const dynamic = "force-dynamic";
 
@@ -71,15 +71,17 @@ export async function POST(req: NextRequest) {
       `Redacta ${CHANNEL_STYLE[channel]}` +
       '\n\nResponde SOLO con JSON válido, sin markdown: {"subject": "...", "body": "..."} — en canales que no llevan asunto, subject debe ser una cadena vacía.';
 
-    const openai = getOpenAI();
-    const completion = await openai.chat.completions.create({
-      model: getModel(),
+    const { client, model, provider } = await getLlm();
+    const completion = await client.chat.completions.create({
+      model,
       messages: [
         { role: "system", content: system },
         { role: "user", content: `${instruction}${leadContext}` },
       ],
-      max_completion_tokens: 900,
-      response_format: { type: "json_object" },
+      ...maxTokensParam(provider, 900),
+      // La capa compatible de Anthropic no soporta response_format; el
+      // parse de abajo ya tiene fallback (texto crudo como cuerpo).
+      ...(provider === "anthropic" ? {} : { response_format: { type: "json_object" as const } }),
     });
 
     const raw = completion.choices[0]?.message?.content?.trim() ?? "";

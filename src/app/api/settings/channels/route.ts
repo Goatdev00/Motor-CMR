@@ -1,16 +1,26 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAllChannelSettings, upsertChannelSettings } from "@/lib/db";
 import { invalidateChannelSettingsCache } from "@/lib/meta";
+import { invalidateLlmCache } from "@/lib/llm";
 import { isChannel } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
 
-// Filas configurables: los 4 canales + webhook de Meta + cuenta de correo.
-const SETTING_KEYS = ["whatsapp", "whatsapp_api", "messenger", "instagram", "meta_webhook", "email"];
+// Filas configurables: los 4 canales + webhook de Meta + cuenta de correo +
+// proveedor de IA (llm).
+const SETTING_KEYS = [
+  "whatsapp",
+  "whatsapp_api",
+  "messenger",
+  "instagram",
+  "meta_webhook",
+  "email",
+  "llm",
+];
 
 // Campos secretos: al leer se enmascaran (••••XXXX); al guardar, un valor
 // enmascarado significa "no lo cambies".
-const SECRET_FIELDS = new Set(["page_access_token", "access_token", "app_secret", "password"]);
+const SECRET_FIELDS = new Set(["page_access_token", "access_token", "app_secret", "password", "api_key"]);
 const MASK_PREFIX = "••••";
 
 // Secretos de ≤4 caracteres: máscara sin sufijo (si no, se devolverían enteros).
@@ -51,7 +61,12 @@ export async function PUT(req: NextRequest) {
     if (typeof channel !== "string" || !SETTING_KEYS.includes(channel)) {
       return NextResponse.json({ error: "channel inválido" }, { status: 400 });
     }
-    if (channel !== "meta_webhook" && channel !== "email" && !isChannel(channel)) {
+    if (
+      channel !== "meta_webhook" &&
+      channel !== "email" &&
+      channel !== "llm" &&
+      !isChannel(channel)
+    ) {
       return NextResponse.json({ error: "channel inválido" }, { status: 400 });
     }
     const enabled = body?.enabled === true;
@@ -83,6 +98,9 @@ export async function PUT(req: NextRequest) {
 
     await upsertChannelSettings(channel, enabled, config);
     invalidateChannelSettingsCache();
+    // El proveedor de IA se cachea aparte en este proceso (el del bot expira
+    // solo en ≤15 s).
+    if (channel === "llm") invalidateLlmCache();
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

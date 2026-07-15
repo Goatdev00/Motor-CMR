@@ -2,7 +2,7 @@
 // conversación, recomienda el próximo paso para cerrar y extrae datos de
 // contacto. Lo usa el bot (automático, con debounce) y la API del dashboard
 // (botón "Analizar ahora").
-import { getModel, getOpenAI } from "./llm";
+import { getLlm, maxTokensParam } from "./llm";
 import {
   getConversationById,
   getRecentHistory,
@@ -53,14 +53,17 @@ export async function analyzeLead(conversationId: number): Promise<Conversation 
     .map((m) => `[${m.role}] ${m.content}`)
     .join("\n");
 
-  const completion = await getOpenAI().chat.completions.create({
-    model: getModel(),
+  const { client, model, provider } = await getLlm();
+  const completion = await client.chat.completions.create({
+    model,
     messages: [
       { role: "system", content: ANALYSIS_PROMPT },
       { role: "user", content: `Conversación:\n${transcript}` },
     ],
-    response_format: { type: "json_object" },
-    max_completion_tokens: 500,
+    // La capa compatible de Anthropic no soporta response_format; el prompt
+    // ya exige JSON y el parse de abajo valida (con error claro si no).
+    ...(provider === "anthropic" ? {} : { response_format: { type: "json_object" as const } }),
+    ...maxTokensParam(provider, 500),
   });
 
   const raw = completion.choices[0]?.message?.content;

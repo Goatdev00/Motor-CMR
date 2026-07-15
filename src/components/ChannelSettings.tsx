@@ -455,6 +455,122 @@ export default function ChannelSettings() {
           </div>
         </div>
 
+        {/* Proveedor de IA (el cerebro de las respuestas) */}
+        {(() => {
+          const row = settings["llm"];
+          const provider = forms["llm"]?.provider || "openai";
+          const providerMeta: Record<string, { key: string; model: string; help: string }> = {
+            openai: {
+              key: "sk-...",
+              model: "gpt-4o-mini",
+              help: "Clave en platform.openai.com → API keys. Modelos: gpt-4o-mini (rápido y económico), gpt-4o.",
+            },
+            anthropic: {
+              key: "sk-ant-...",
+              model: "claude-sonnet-5",
+              help: "Clave en console.anthropic.com → API keys. Modelos: claude-sonnet-5 (equilibrado), claude-haiku-4-5 (rápido y económico).",
+            },
+            gemini: {
+              key: "AIza...",
+              model: "gemini-2.5-flash",
+              help: "Clave en aistudio.google.com → Get API key. Modelos: gemini-2.5-flash (rápido y económico), gemini-2.5-pro.",
+            },
+          };
+          const meta = providerMeta[provider] ?? providerMeta.openai;
+          const result = testResult["llm"];
+          return (
+            <div className={cardClass}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-neutral-100">
+                    Inteligencia artificial (IA)
+                  </h2>
+                  <p className="mt-1 text-xs text-neutral-400">
+                    El cerebro de las respuestas del bot, el análisis de leads y los
+                    generadores. Elige el proveedor y pega su clave.{" "}
+                    <strong>Apagado</strong> = se usa la clave OPENAI_API_KEY del archivo
+                    .env.local del servidor (como hasta ahora).
+                  </p>
+                </div>
+                <Toggle
+                  on={row?.enabled ?? false}
+                  onChange={(v) => toggleEnabled("llm", v)}
+                  disabled={busy !== null}
+                />
+              </div>
+
+              <div className="mt-3 space-y-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-neutral-500">
+                    Proveedor
+                  </label>
+                  <select
+                    value={provider}
+                    onChange={(e) => setField("llm", "provider", e.target.value)}
+                    className={inputClass}
+                  >
+                    <option value="openai">ChatGPT (OpenAI)</option>
+                    <option value="anthropic">Claude (Anthropic)</option>
+                    <option value="gemini">Gemini (Google)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-neutral-500">
+                    Clave API
+                  </label>
+                  <input
+                    type="password"
+                    value={forms["llm"]?.api_key ?? ""}
+                    onChange={(e) => setField("llm", "api_key", e.target.value)}
+                    placeholder={meta.key}
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-neutral-500">
+                    Modelo (opcional — vacío usa el recomendado)
+                  </label>
+                  <input
+                    value={forms["llm"]?.model ?? ""}
+                    onChange={(e) => setField("llm", "model", e.target.value)}
+                    placeholder={meta.model}
+                    className={inputClass}
+                  />
+                  <p className="mt-1 text-[11px] text-neutral-600">{meta.help}</p>
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  onClick={() => save("llm", row?.enabled ?? false)}
+                  disabled={busy === "llm"}
+                  className={btnPrimary}
+                >
+                  {busy === "llm" ? "Guardando..." : "Guardar"}
+                </button>
+                <button
+                  onClick={() => test("llm")}
+                  disabled={busy === "test:llm"}
+                  className={btnGhost}
+                >
+                  {busy === "test:llm" ? "Probando..." : "Probar conexión"}
+                </button>
+              </div>
+              {result && (
+                <p
+                  className={`mt-2 rounded-lg p-2 text-xs ${
+                    result.ok ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"
+                  }`}
+                >
+                  {result.ok ? "✓ " : "✕ "}
+                  {result.detail}
+                </p>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Canales de Meta */}
         {META_CARDS.map((card) => {
           const row = settings[card.channel];

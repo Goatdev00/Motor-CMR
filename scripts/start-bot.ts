@@ -72,14 +72,25 @@ function assertEnv(): void {
     console.error("[bot]    Copia .env.example a .env.local y completa los valores.");
     process.exit(1);
   }
-  const llm = getLlmProviderInfo();
-  if (llm) {
-    console.log(`[bot] LLM: ${llm}`);
-  } else {
-    console.warn(
-      "[bot] ⚠️  OPENAI_API_KEY no está definida: el bot conecta y guarda " +
-        "mensajes, pero las respuestas de IA van a fallar hasta que la agregues."
-    );
+}
+
+// Proveedor de IA activo (dashboard → Canales → Inteligencia artificial, o
+// el fallback OPENAI_API_KEY del .env.local). Solo informativo: el bot
+// arranca igual y las respuestas fallan con log claro si falta.
+async function logLlmProvider(): Promise<void> {
+  try {
+    const llm = await getLlmProviderInfo();
+    if (llm) {
+      console.log(`[bot] LLM: ${llm}`);
+    } else {
+      console.warn(
+        "[bot] ⚠️  Sin proveedor de IA: conéctalo en Canales → Inteligencia artificial " +
+          "(o define OPENAI_API_KEY en .env.local). El bot conecta y guarda mensajes, " +
+          "pero las respuestas de IA van a fallar hasta entonces."
+      );
+    }
+  } catch {
+    /* informativo: no bloquea el arranque */
   }
 }
 
@@ -639,6 +650,7 @@ async function flushOutbox(): Promise<void> {
 
 async function main(): Promise<void> {
   assertEnv();
+  await logLlmProvider();
 
   // Verificación temprana: si el schema no está aplicado, avisar claro.
   // listWaAccounts también valida la migración de Equipo (multi-cuenta).
