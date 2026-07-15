@@ -13,6 +13,7 @@ export type DashboardView =
   | "leads"
   | "mailing"
   | "templates"
+  | "testchat"
   | "calendar"
   | "alarms"
   | "team"
@@ -119,6 +120,16 @@ const ITEMS: { key: DashboardView; label: string; icon: React.ReactNode }[] = [
             <path d="M7 16.5h4" />
           </>
         }
+      />
+    ),
+  },
+  {
+    key: "testchat",
+    label: "Chat de prueba",
+    icon: (
+      <Icon
+        path="M21 11.5a8.38 8.38 0 0 1-9 8.4 8.5 8.5 0 0 1-3.4-.7L3 21l1.8-4.6a8.38 8.38 0 0 1-1.3-4.9 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 9 8.5z"
+        extra={<path d="m10.2 9.2 4.2 2.3-4.2 2.3z" fill="currentColor" stroke="none" />}
       />
     ),
   },

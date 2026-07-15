@@ -64,8 +64,13 @@ export function clientRequestsHuman(text: string): boolean {
   return /\bno\b[\s\w]*\b(bot|robot|maquina|ia)\b/.test(t);
 }
 
+// Acuse que se envía al cliente cuando pide un humano (el chat de prueba
+// lo reutiliza para simular exactamente lo mismo).
+export const HANDOFF_ACK = "Claro, te comunico con un asesor humano. En un momento te atienden.";
+
 // El LLM respondió con la frase de derivación del system prompt.
-function botOfferedHandoff(reply: string): boolean {
+// Exportada para que el chat de prueba detecte la derivación igual que acá.
+export function botOfferedHandoff(reply: string): boolean {
   return normalizeText(reply).includes(normalizeText(HANDOFF_PHRASE).replace(/\.$/, ""));
 }
 
@@ -222,7 +227,7 @@ export async function respondToInbound(
   // se entere — ya quedó hecho.
   if (clientRequestsHuman(msg.text)) {
     await handOffToHuman(conversationId, "El cliente pidió hablar con un humano");
-    const ack = "Claro, te comunico con un asesor humano. En un momento te atienden.";
+    const ack = HANDOFF_ACK;
     try {
       await msg.send(ack);
       console.log(`[bot] → [${msg.channel}] ${msg.externalId} (confirmación de derivación)`);

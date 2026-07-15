@@ -10,6 +10,7 @@ import CrmBoard from "./CrmBoard";
 import LeadsHubPanel from "./LeadsHubPanel";
 import TemplatesPanel from "./TemplatesPanel";
 import SettingsPanel from "./SettingsPanel";
+import TestChatPanel from "./TestChatPanel";
 import ChannelSettings from "./ChannelSettings";
 import MailingPanel from "./MailingPanel";
 import CalendarPanel from "./CalendarPanel";
@@ -33,6 +34,7 @@ const VIEW_TITLES: Record<DashboardView, string> = {
   leads: "Leads",
   mailing: "Mailing",
   templates: "Plantillas",
+  testchat: "Chat de prueba",
   calendar: "Calendario",
   alarms: "Alarmas",
   team: "Equipo",
@@ -234,6 +236,8 @@ export default function ConnectionGate() {
           <MailingPanel />
         ) : view === "templates" ? (
           <TemplatesPanel />
+        ) : view === "testchat" ? (
+          <TestChatPanel />
         ) : view === "calendar" ? (
           <CalendarPanel />
         ) : view === "alarms" ? (
