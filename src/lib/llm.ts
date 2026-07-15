@@ -39,16 +39,24 @@ export function getLlmProviderInfo(): string | null {
 }
 
 export async function generateReply(
-  history: Pick<Message, "role" | "content">[]
+  history: Pick<Message, "role" | "content">[],
+  // Agente de IA que atiende esta conversación (Equipo → Equipo de IA):
+  // su especialización se añade al prompt base sin romper la regla de
+  // derivación a humano.
+  agent?: { name: string; instructions: string } | null
 ): Promise<string> {
   const openai = getClient();
   const model = process.env.OPENAI_MODEL || DEFAULT_MODEL;
+
+  const system = agent
+    ? `${SYSTEM_PROMPT}\n\n## Rol asignado para esta conversación: ${agent.name}\n${agent.instructions}\n\n(Las reglas de arriba siguen vigentes, incluida la frase exacta de derivación a un asesor humano.)`
+    : SYSTEM_PROMPT;
 
   // 'human' (mensajes que el operador mandó desde el dashboard) se mapea a
   // 'assistant': para el LLM son respuestas previas emitidas desde este
   // lado de la conversación.
   const messages = [
-    { role: "system" as const, content: SYSTEM_PROMPT },
+    { role: "system" as const, content: system },
     ...history.map((m) => ({
       role: m.role === "user" ? ("user" as const) : ("assistant" as const),
       content: m.content,

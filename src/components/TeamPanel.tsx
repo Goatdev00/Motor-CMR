@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TEAM_ROLES, type TeamMember, type TeamRole } from "@/lib/db";
 import { DEFAULT_STAGE_CONFIG, STAGE_ORDER, type StageConfigMap } from "@/lib/stages";
+import AiTeamSection from "./AiTeamSection";
 import type { SessionUser } from "./LoginScreen";
 
 const cardClass = "rounded-xl border border-neutral-800 bg-neutral-900 p-4";
@@ -131,6 +132,9 @@ function statusChip(a: AccountView) {
 
 export default function TeamPanel({ currentUser }: { currentUser: SessionUser }) {
   const isAdmin = currentUser.role === "ADMIN";
+  // Pestañas: el equipo humano (cuentas, miembros, enrutamiento) y el
+  // equipo de IA (agentes especializados por tema/flujo).
+  const [tab, setTab] = useState<"real" | "ia">("real");
   const [accounts, setAccounts] = useState<AccountView[] | null>(null);
   const [members, setMembers] = useState<TeamMember[] | null>(null);
   const [drafts, setDrafts] = useState<Record<number, MemberDraft>>({});
@@ -378,10 +382,37 @@ export default function TeamPanel({ currentUser }: { currentUser: SessionUser })
         {okMsg && <p className="rounded-lg bg-emerald-950 p-3 text-sm text-emerald-400">✓ {okMsg}</p>}
         {!isAdmin && (
           <p className="rounded-lg bg-amber-950 p-3 text-sm text-amber-400">
-            Vista de solo lectura: solo un Admin puede modificar cuentas, miembros y enrutamiento.
+            Vista de solo lectura: solo un Admin puede modificar cuentas, miembros, enrutamiento
+            y agentes de IA.
           </p>
         )}
 
+        {/* ── Pestañas: equipo humano / equipo de IA ── */}
+        <div className="inline-flex self-start overflow-hidden rounded-lg border border-neutral-700 text-xs font-medium">
+          {(
+            [
+              ["real", "Equipo real"],
+              ["ia", "Equipo de IA"],
+            ] as const
+          ).map(([key, label], i) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`px-4 py-2 transition-colors ${i > 0 ? "border-l border-neutral-700" : ""} ${
+                tab === key
+                  ? "bg-neutral-100 text-neutral-900"
+                  : "bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "ia" ? (
+          <AiTeamSection isAdmin={isAdmin} stageConfig={stageConfig} />
+        ) : (
+          <>
         {/* ── Cuentas de WhatsApp ── */}
         <div className={`${cardClass} ${isAdmin ? "" : "pointer-events-none select-none"}`}>
           <h2 className="text-sm font-semibold text-neutral-100">Cuentas de WhatsApp</h2>
@@ -741,6 +772,8 @@ export default function TeamPanel({ currentUser }: { currentUser: SessionUser })
             {isBusy("routing") ? "Guardando..." : "Guardar enrutamiento"}
           </button>
         </div>
+          </>
+        )}
       </div>
     </main>
   );

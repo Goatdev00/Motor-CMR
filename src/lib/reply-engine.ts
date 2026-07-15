@@ -15,6 +15,7 @@ import { generateReply } from "./llm";
 import { maybeAnalyzeLead } from "./lead-analysis";
 import { HANDOFF_PHRASE } from "./system-prompt";
 import { findMatchingTrigger, getKeywordTriggersCached } from "./templates";
+import { selectAgentForInbound } from "./ai-agents";
 import type { Channel } from "./channels";
 
 // ── Dedup de mensajes entrantes ─────────────────────────────
@@ -232,6 +233,20 @@ export async function respondToInbound(
     return;
   }
 
+  // Equipo de IA: ¿qué agente atiende este mensaje? (por tema del mensaje,
+  // continuidad de la conversación o comodín de flujo). null = prompt base.
+  const selection = await selectAgentForInbound({
+    conversationId,
+    text: msg.text,
+    stage: fresh.stage ?? null,
+    channel: fresh.channel ?? null,
+  });
+  if (selection) {
+    console.log(
+      `[bot] 🤖 Agente "${selection.agent.name}" atiende la conversación ${conversationId} (${selection.reason}${selection.topic ? `: "${selection.topic}"` : ""})`
+    );
+  }
+
   // Modo AI: generar respuesta con historial reciente y responder.
   const history = await getRecentHistory(conversationId, 20);
   console.log(`[bot] Llamando al LLM con ${history.length} mensajes de contexto...`);
@@ -239,7 +254,7 @@ export async function respondToInbound(
 
   let reply: string;
   try {
-    reply = await generateReply(history);
+    reply = await generateReply(history, selection?.agent ?? null);
   } catch (err) {
     // Si el LLM falla (429, key inválida, etc.) NO se cae el proceso: el
     // mensaje del cliente ya quedó guardado y visible en el dashboard.
