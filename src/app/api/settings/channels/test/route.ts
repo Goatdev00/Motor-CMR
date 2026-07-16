@@ -8,22 +8,37 @@ import { verifyLlmConfig } from "@/lib/llm";
 // Prueba de conexión: canales de Meta (tokens), cuenta de correo (SMTP) o
 // proveedor de IA (llamada mínima real al modelo).
 
-// Config guardada + overrides del formulario (los valores enmascarados del
-// input password significan "usa el guardado").
+// Misma máscara que usa el GET de settings (••••XXXX).
+const MASK_PREFIX = "••••";
+function maskValue(value: string): string {
+  return value.length <= 4 ? MASK_PREFIX : `${MASK_PREFIX}${value.slice(-4)}`;
+}
+
+// Config guardada + overrides del formulario. La máscara EXACTA del valor
+// guardado significa "prueba lo persistido"; máscara + texto pegado encima
+// es un error del operador y se reporta (ignorarlo hacía que la prueba
+// validara el valor viejo y saliera en verde con uno nuevo incorrecto).
 function mergeConfig(
   saved: Record<string, string> | undefined,
   overrides: unknown
-): Record<string, string> {
+): { merged: Record<string, string> } | { maskError: string } {
   const merged = { ...(saved ?? {}) };
   if (overrides && typeof overrides === "object") {
     for (const [k, v] of Object.entries(overrides as Record<string, unknown>)) {
       if (typeof v !== "string") continue;
       const value = v.trim();
-      if (!value || value.startsWith("••••")) continue;
+      if (!value) continue;
+      const current = saved?.[k];
+      if (current && value === maskValue(current)) continue; // probar lo guardado
+      if (value.startsWith(MASK_PREFIX)) {
+        return {
+          maskError: `El campo '${k}' contiene la máscara del valor anterior con texto pegado encima — borra el campo COMPLETO y pega el valor de nuevo (no se probó nada).`,
+        };
+      }
       merged[k] = value;
     }
   }
-  return merged;
+  return { merged };
 }
 
 export async function POST(req: NextRequest) {
@@ -37,11 +52,12 @@ export async function POST(req: NextRequest) {
     // Correo: verifica credenciales SMTP con lo guardado + lo del formulario.
     if (channel === "email") {
       const row = (await getAllChannelSettings())["email"];
-      const merged = mergeConfig(row?.config, body?.config);
+      const m = mergeConfig(row?.config, body?.config);
+      if ("maskError" in m) return NextResponse.json({ ok: false, detail: m.maskError });
       const result = await verifyEmailConfig(
         row
-          ? { ...row, config: merged }
-          : { channel: "email", enabled: false, config: merged, updated_at: 0 }
+          ? { ...row, config: m.merged }
+          : { channel: "email", enabled: false, config: m.merged, updated_at: 0 }
       );
       return NextResponse.json(result);
     }
@@ -49,7 +65,9 @@ export async function POST(req: NextRequest) {
     // IA: llamada mínima real con el proveedor/clave/modelo del formulario.
     if (channel === "llm") {
       const row = (await getAllChannelSettings())["llm"];
-      const result = await verifyLlmConfig(mergeConfig(row?.config, body?.config));
+      const m = mergeConfig(row?.config, body?.config);
+      if ("maskError" in m) return NextResponse.json({ ok: false, detail: m.maskError });
+      const result = await verifyLlmConfig(m.merged);
       return NextResponse.json(result);
     }
 

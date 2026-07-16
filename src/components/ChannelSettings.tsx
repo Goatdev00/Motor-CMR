@@ -406,7 +406,19 @@ export default function ChannelSettings() {
 
   const setField = (channel: string, key: string, value: string) => {
     setForms((prev) => ({ ...prev, [channel]: { ...(prev[channel] ?? {}), [key]: value } }));
+    // Editar un campo invalida el resultado de la última prueba: un "✓ verde"
+    // viejo junto a un token recién cambiado era una trampa.
+    setTestResult((prev) => {
+      if (!(channel in prev)) return prev;
+      const next = { ...prev };
+      delete next[channel];
+      return next;
+    });
   };
+
+  // En los campos secretos, al enfocar se selecciona todo: así pegar
+  // REEMPLAZA la máscara (••••XXXX) en vez de quedar pegado detrás de ella.
+  const selectAllOnFocus = (e: React.FocusEvent<HTMLInputElement>) => e.target.select();
 
   if (!settings) {
     return (
@@ -522,6 +534,7 @@ export default function ChannelSettings() {
                     type="password"
                     value={forms["llm"]?.api_key ?? ""}
                     onChange={(e) => setField("llm", "api_key", e.target.value)}
+                    onFocus={selectAllOnFocus}
                     placeholder={meta.key}
                     autoComplete="off"
                     className={inputClass}
@@ -599,6 +612,7 @@ export default function ChannelSettings() {
                       type={f.secret ? "password" : "text"}
                       value={forms[card.channel]?.[f.key] ?? ""}
                       onChange={(e) => setField(card.channel, f.key, e.target.value)}
+                      onFocus={f.secret ? selectAllOnFocus : undefined}
                       placeholder={f.placeholder}
                       autoComplete="off"
                       className={inputClass}
@@ -699,6 +713,7 @@ export default function ChannelSettings() {
                 type="password"
                 value={forms["meta_webhook"]?.app_secret ?? ""}
                 onChange={(e) => setField("meta_webhook", "app_secret", e.target.value)}
+                onFocus={selectAllOnFocus}
                 placeholder="de Meta → App settings → Basic"
                 autoComplete="off"
                 className={inputClass}

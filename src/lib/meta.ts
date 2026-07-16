@@ -197,9 +197,17 @@ export async function fetchProfileName(
 
 // ── Prueba de conexión desde el dashboard ───────────────────
 
-// overrides: valores del formulario aún no guardados (los enmascarados se
-// ignoran y se usa lo persistido) — así "Probar conexión" valida lo que el
-// usuario está viendo, no el token viejo.
+// Misma máscara que usa la API de settings al devolver secretos (••••XXXX).
+const MASK_PREFIX = "••••";
+function maskValue(value: string): string {
+  return value.length <= 4 ? MASK_PREFIX : `${MASK_PREFIX}${value.slice(-4)}`;
+}
+
+// overrides: valores del formulario aún no guardados. La máscara EXACTA del
+// valor guardado significa "prueba lo persistido"; pero máscara + texto
+// pegado encima es un error del operador (pegó sin borrar el campo) y se
+// reporta — ignorarlo en silencio hacía que la prueba validara el token
+// VIEJO y saliera en verde con un token nuevo incorrecto.
 export async function testChannel(
   channel: Channel,
   overrides?: Record<string, string>
@@ -209,7 +217,15 @@ export async function testChannel(
     const merged: Record<string, string> = { ...(rows[channel]?.config ?? {}) };
     for (const [k, v] of Object.entries(overrides)) {
       const value = v.trim();
-      if (!value || value.startsWith("••••")) continue;
+      if (!value) continue;
+      const current = rows[channel]?.config?.[k];
+      if (current && value === maskValue(current)) continue; // probar lo guardado
+      if (value.startsWith(MASK_PREFIX)) {
+        return {
+          ok: false,
+          detail: `El campo '${k}' contiene la máscara del valor anterior con texto pegado encima — borra el campo COMPLETO y pega el valor de nuevo (no se probó nada).`,
+        };
+      }
       merged[k] = value;
     }
     rows = {
