@@ -33,6 +33,36 @@ export default function BotPromptsCard({ isAdmin }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState(false);
+  // Generador con IA del prompt principal: frase corta + estado de carga.
+  const [genBrief, setGenBrief] = useState("");
+  const [generating, setGenerating] = useState(false);
+
+  const generatePrincipal = async () => {
+    setGenerating(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/prompts/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "principal", brief: genBrief, draft: principal }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        prompt?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || !data?.prompt) {
+        setError(data?.error ?? "No se pudo generar el prompt");
+        return;
+      }
+      setPrincipal(data.prompt);
+      setDirty(true);
+      setSavedMsg(false);
+    } catch {
+      setError("Error de red al generar el prompt");
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const load = async () => {
     setError(null);
@@ -147,6 +177,25 @@ export default function BotPromptsCard({ isAdmin }: Props) {
             <p className="mt-1 text-[11px] text-neutral-600">
               {principal.length}/{maxLength} · Este prompt es SOLO de tu organización.
             </p>
+            {/* Generador con IA: describe el negocio en una frase y la IA
+                redacta el prompt completo (usa lo ya escrito como borrador). */}
+            <div className="mt-1.5 flex gap-2">
+              <input
+                value={genBrief}
+                onChange={(e) => setGenBrief(e.target.value)}
+                maxLength={600}
+                placeholder="Describe tu negocio en una frase (p.ej. «agencia de publicidad que vende pauta y branding a pymes»)"
+                className={`${inputClass} text-xs`}
+              />
+              <button
+                onClick={generatePrincipal}
+                disabled={generating || busy || (!genBrief.trim() && !principal.trim())}
+                title="La IA redacta un prompt completo con lo que escribas aquí. Si ya hay texto, lo usa como base y lo completa."
+                className="shrink-0 rounded-lg border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {generating ? "Generando..." : "✨ Generar con IA"}
+              </button>
+            </div>
           </div>
           <div>
             <label className={labelClass}>

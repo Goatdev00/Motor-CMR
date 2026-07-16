@@ -45,6 +45,40 @@ export default function AiTeamSection({ isAdmin, stageConfig }: Props) {
   const [testText, setTestText] = useState("");
   const [testStage, setTestStage] = useState<LeadStage>("NUEVO");
   const [testChannel, setTestChannel] = useState<Channel>("whatsapp");
+  // Generador de prompt con IA (por agente): frase corta + estado de carga.
+  const [genBriefs, setGenBriefs] = useState<Record<string, string>>({});
+  const [generatingId, setGeneratingId] = useState<string | null>(null);
+
+  const generatePrompt = async (a: AiAgent) => {
+    setGeneratingId(a.id);
+    setError(null);
+    try {
+      const res = await fetch("/api/prompts/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "agent",
+          brief: genBriefs[a.id] ?? "",
+          name: a.name,
+          topics: a.topics,
+          draft: a.instructions,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        prompt?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || !data?.prompt) {
+        setError(data?.error ?? "No se pudo generar el prompt");
+        return;
+      }
+      update(a.id, { instructions: data.prompt });
+    } catch {
+      setError("Error de red al generar el prompt");
+    } finally {
+      setGeneratingId(null);
+    }
+  };
 
   const load = async () => {
     setLoadError(null);
@@ -403,6 +437,31 @@ export default function AiTeamSection({ isAdmin, stageConfig }: Props) {
                     }
                     className={inputClass}
                   />
+                  {/* Generador con IA: con el nombre + temas (y una frase
+                      opcional) redacta un prompt completo. Si ya hay texto,
+                      lo usa como borrador y lo completa. */}
+                  <div className="mt-1.5 flex gap-2">
+                    <input
+                      value={genBriefs[a.id] ?? ""}
+                      onChange={(e) =>
+                        setGenBriefs((prev) => ({ ...prev, [a.id]: e.target.value }))
+                      }
+                      maxLength={600}
+                      placeholder="Opcional: en una frase, ¿qué debe hacer? (p.ej. «vender planes de pauta y agendar llamada»)"
+                      className={`${inputClass} text-xs`}
+                    />
+                    <button
+                      onClick={() => generatePrompt(a)}
+                      disabled={
+                        generatingId !== null ||
+                        (!a.name.trim() && a.topics.length === 0 && !(genBriefs[a.id] ?? "").trim() && !a.instructions.trim())
+                      }
+                      title="La IA redacta un prompt completo con el nombre, los temas y lo que escribas aquí. Si ya hay texto, lo usa como base y lo completa."
+                      className="shrink-0 rounded-lg border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+                    >
+                      {generatingId === a.id ? "Generando..." : "✨ Generar con IA"}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-2 grid gap-2 lg:grid-cols-3">
