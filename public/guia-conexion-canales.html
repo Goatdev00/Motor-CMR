@@ -541,6 +541,7 @@
         <ul>
           <li><b>Vincular Instagram a la página</b>: en su página de Facebook → <b>Configuración</b> → <b>Cuentas vinculadas</b> → <b>Instagram</b> → conectar la cuenta. Debe ser una cuenta <b>profesional</b> (tipo Negocio o Creador; el cambio es gratis: app de Instagram → Configuración → Tipo de cuenta).</li>
           <li><b>Permitir el acceso a mensajes</b>: en la app de Instagram del teléfono → <b>Configuración</b> → <b>Mensajes y respuestas a historias</b> → <b>Controles de mensajes</b> → active <b>“Permitir el acceso a los mensajes”</b> (en algunas versiones aparece bajo “Herramientas conectadas”).</li>
+          <li><b>Rol de probador (mientras la app esté “Sin publicar”)</b>: si al iniciar sesión aparece <i>“Rol de desarrollador insuficiente”</i>, su cuenta de Instagram necesita un rol en la app. En la app de Meta: <span class="clickpath">Roles de la app › Roles</span> → <b>Agregar personas</b> → rol <b>“Probador de Instagram”</b> → escriba el usuario de Instagram. Luego, en <b>instagram.com</b> con esa cuenta: <b>Configuración → Sitios web y aplicaciones → Invitaciones de probador</b> → <b>Aceptar</b>. Reintente la conexión.</li>
         </ul>
       </li>
       <li>
@@ -871,6 +872,10 @@
       <tr>
         <td>Los mensajes de Messenger/Instagram/WhatsApp API no llegan a Chats.</td>
         <td>Casi siempre es el webhook o el estado de la app: (1) suscripción del campo <code>messages</code> marcada en cada caso de uso (sección 3, pasos 6 y 7, y sección 4, paso 3); (2) app “Sin publicar” → solo personas con rol en la app pueden escribir (sección 3, paso 9); (3) para Instagram, “Permitir el acceso a los mensajes” activo en la app de Instagram (sección 3, paso 8).</td>
+      </tr>
+      <tr>
+        <td>Al conectar Instagram: “Rol de desarrollador insuficiente”.</td>
+        <td>Con la app “Sin publicar”, la cuenta de Instagram debe tener rol en la app: <b>Roles de la app › Roles → Agregar personas → “Probador de Instagram”</b>, y aceptar la invitación en instagram.com → Configuración → Sitios web y aplicaciones → Invitaciones de probador (sección 3, paso 8). Verifique además que está iniciando sesión con la cuenta profesional del negocio, no con una personal.</td>
       </tr>
       <tr>
         <td>“Probar conexión” de un canal de Meta falla.</td>
