@@ -683,7 +683,7 @@
       <div class="channel-num">6</div>
       <div>
         <h2>Instagram — mensajes directos</h2>
-        <p class="lead">Si en la sección 3 marcó su cuenta de Instagram al conectar la página, aquí no hay nada nuevo que autorizar: usa el MISMO token de Messenger.</p>
+        <p class="lead">En las apps nuevas de Meta, Instagram genera su PROPIO token (empieza por <code>IGAA…</code>) desde su caso de uso. La plataforma lo acepta directamente — y también acepta el token de página (<code>EAAG…</code>) de las apps antiguas.</p>
       </div>
     </div>
 
@@ -691,14 +691,15 @@
       <strong>Necesita</strong>
       <ul>
         <li>La <a class="ext" href="#app-meta">sección 3</a> completa, incluidos la conexión de Instagram (pasos 7 y 8) y el webhook con <code>messages</code> suscrito (pasos 5 a 7).</li>
-        <li>El <b>Page Access Token</b> generado en la sección 5 (sirve para ambos canales: los permisos de Instagram se otorgaron junto con los de la página en un solo paso).</li>
+        <li>La cuenta de Instagram conectada en su caso de uso (sección 3, paso 7).</li>
       </ul>
     </div>
 
     <ol class="steps">
       <li>
-        <h3>Pegue el token en el dashboard</h3>
-        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“Instagram (DMs)”</b>, pegue el <b>mismo Page Access Token</b> de la sección 5 y pulse <b>Guardar</b>.</p>
+        <h3>Genere el token de Instagram y péguelo en el dashboard</h3>
+        <p>En el caso de uso de Instagram (Panel → <span class="clickpath">Personalizar el caso de uso “Administrar mensajes y contenido en Instagram”</span>, o el submenú <span class="clickpath">Configuración de Instagram</span>), en la fila de su cuenta conectada pulse <b>“Generar token”</b> y cópielo — empieza por <code>IGAA…</code>.</p>
+        <p>En <span class="kbd-path">Canales</span>, tarjeta <b>“Instagram (DMs)”</b>, pegue ese token y pulse <b>Guardar</b>. (Apps antiguas sin ese botón: use el mismo Page Access Token de la sección 5 — también es válido.)</p>
       </li>
       <li>
         <h3>Pruebe y encienda</h3>
@@ -872,6 +873,10 @@
       <tr>
         <td>Los mensajes de Messenger/Instagram/WhatsApp API no llegan a Chats.</td>
         <td>Casi siempre es el webhook o el estado de la app: (1) suscripción del campo <code>messages</code> marcada en cada caso de uso (sección 3, pasos 6 y 7, y sección 4, paso 3); (2) app “Sin publicar” → solo personas con rol en la app pueden escribir (sección 3, paso 9); (3) para Instagram, “Permitir el acceso a los mensajes” activo en la app de Instagram (sección 3, paso 8).</td>
+      </tr>
+      <tr>
+        <td>Al probar Instagram: “Invalid OAuth access token - Cannot parse access token”.</td>
+        <td>Se pegó un token de un tipo que no corresponde (o incompleto). Use el token <code>IGAA…</code> que genera el caso de uso de Instagram (sección 6, paso 1) — o, en apps antiguas, el token de página <code>EAAG…</code>. Borre el campo por completo antes de pegar.</td>
       </tr>
       <tr>
         <td>Al conectar Instagram: “Rol de desarrollador insuficiente”.</td>

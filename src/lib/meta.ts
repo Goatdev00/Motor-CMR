@@ -7,6 +7,17 @@ import { getAllChannelSettings, type ChannelSettingsRow } from "./db";
 import type { Channel } from "./channels";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
+// API de Instagram con "inicio de sesión de Instagram" (apps nuevas de Meta):
+// mismo contrato de mensajería pero en otro host y con tokens IGAA….
+const IG_GRAPH = "https://graph.instagram.com/v21.0";
+
+// Los tokens de página empiezan por EAA…; los del inicio de sesión de
+// Instagram por IGAA…. Según el tipo, los DMs de Instagram se hablan con
+// graph.facebook.com (plataforma Messenger, apps antiguas) o con
+// graph.instagram.com (apps nuevas).
+function instagramApiBase(token: string): string {
+  return token.startsWith("IG") ? IG_GRAPH : GRAPH;
+}
 
 // Cache corto: el webhook y el outbox leen settings en cada mensaje; 15s de
 // TTL evita golpear Supabase sin retrasar demasiado un cambio de token.
@@ -52,9 +63,14 @@ async function graphFetch(url: string, init: RequestInit, context: string): Prom
 
 // ── Envío de texto por canal ────────────────────────────────
 
-async function sendPageMessage(pageToken: string, recipientId: string, text: string): Promise<void> {
+async function sendPageMessage(
+  pageToken: string,
+  recipientId: string,
+  text: string,
+  base: string = GRAPH
+): Promise<void> {
   await graphFetch(
-    `${GRAPH}/me/messages?access_token=${encodeURIComponent(pageToken)}`,
+    `${base}/me/messages?access_token=${encodeURIComponent(pageToken)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -105,9 +121,11 @@ export async function sendChannelText(
     case "messenger":
       await sendPageMessage(requireConfig(rows, "messenger", "page_access_token"), recipientId, text);
       return;
-    case "instagram":
-      await sendPageMessage(requireConfig(rows, "instagram", "page_access_token"), recipientId, text);
+    case "instagram": {
+      const token = requireConfig(rows, "instagram", "page_access_token");
+      await sendPageMessage(token, recipientId, text, instagramApiBase(token));
       return;
+    }
     case "whatsapp_api":
       await sendWhatsAppApiMessage(
         requireConfig(rows, "whatsapp_api", "phone_number_id"),
@@ -159,9 +177,10 @@ export async function fetchProfileName(
         ? rows["instagram"]?.config?.page_access_token
         : rows["messenger"]?.config?.page_access_token;
     if (!token) return null;
+    const base = channel === "instagram" ? instagramApiBase(token) : GRAPH;
     const fields = channel === "instagram" ? "name,username" : "first_name,last_name,name";
     const body = (await graphFetch(
-      `${GRAPH}/${userId}?fields=${fields}&access_token=${encodeURIComponent(token)}`,
+      `${base}/${userId}?fields=${fields}&access_token=${encodeURIComponent(token)}`,
       {},
       "profile"
     )) as { name?: string; username?: string; first_name?: string; last_name?: string };
@@ -204,6 +223,23 @@ export async function testChannel(
     };
   }
   try {
+    if (channel === "instagram") {
+      const token = requireConfig(rows, "instagram", "page_access_token");
+      // Token IGAA… (API de Instagram con inicio de sesión de Instagram):
+      // se valida contra graph.instagram.com — es el camino de apps nuevas.
+      if (token.startsWith("IG")) {
+        const body = (await graphFetch(
+          `${IG_GRAPH}/me?fields=username,name&access_token=${encodeURIComponent(token)}`,
+          {},
+          "test"
+        )) as { username?: string; name?: string };
+        return {
+          ok: true,
+          detail: `Conectado a Instagram como @${body.username ?? "?"}${body.name ? ` (${body.name})` : ""}`,
+        };
+      }
+      // Token de página (EAA…): cae al flujo de la plataforma Messenger.
+    }
     if (channel === "messenger" || channel === "instagram") {
       const token = requireConfig(rows, channel, "page_access_token");
       try {
