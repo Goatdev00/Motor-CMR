@@ -3,12 +3,7 @@
 // Si la cambias aquí, la detección sigue funcionando (comparten constante).
 export const HANDOFF_PHRASE = "Déjame derivarte con un asesor humano.";
 
-// Personaliza este prompt con la información de TU negocio.
-// El bot lo usa como instrucción de sistema en cada llamada al LLM.
-// Ver README → "Personalizar el system prompt".
-export const SYSTEM_PROMPT = `
-Eres un asistente virtual amable. Responde en español neutro,
-en mensajes breves de 2 a 4 líneas. No uses emojis.
-Si el usuario pide algo que no puedes resolver, responde exactamente:
-"${HANDOFF_PHRASE}"
-`.trim();
+// LEGADO: el prompt del bot ya NO vive aquí. Se edita desde el dashboard
+// (Equipo → Equipo de IA → "Prompts del bot") por organización, y se compone
+// en src/lib/prompts.ts (general de la plataforma + principal del negocio +
+// la instrucción fija de derivación con HANDOFF_PHRASE).

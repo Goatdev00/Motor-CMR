@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { selectAgent, type AiAgent } from "@/lib/agent-match";
+import BotPromptsCard from "./BotPromptsCard";
 import { STAGE_ORDER, type StageConfigMap } from "@/lib/stages";
 import type { LeadStage } from "@/lib/db";
 import { CHANNEL_LABELS, type Channel } from "@/lib/channels";
@@ -231,6 +232,10 @@ export default function AiTeamSection({ isAdmin, stageConfig }: Props) {
 
   return (
     <>
+      {/* Prompts del bot: general (plataforma) + principal (negocio). Las
+          instrucciones de cada agente viven en sus tarjetas de abajo. */}
+      <BotPromptsCard isAdmin={isAdmin} />
+
       <div className={cardClass}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -385,7 +390,8 @@ export default function AiTeamSection({ isAdmin, stageConfig }: Props) {
 
                 <div className="mt-2">
                   <label className={labelClass}>
-                    Instrucciones (qué sabe, cómo responde, qué ofrece)
+                    Prompt del agente (qué sabe, cómo responde, qué ofrece — se suma al
+                    principal cuando este agente atiende)
                   </label>
                   <textarea
                     value={a.instructions}

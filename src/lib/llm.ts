@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { SYSTEM_PROMPT } from "./system-prompt";
+import { getSystemPromptCached } from "./prompts";
 import { AGENCY_ORG_ID, getAllChannelSettings } from "./db";
 import type { Message } from "./db";
 
@@ -204,9 +204,13 @@ export async function generateReply(
 ): Promise<string> {
   const { client, model, provider } = await getLlm(orgId);
 
+  // Prompt compuesto de la organización (general de la plataforma +
+  // principal del negocio + regla fija de derivación), editable desde
+  // Equipo → Equipo de IA → Prompts del bot.
+  const basePrompt = await getSystemPromptCached(orgId);
   const system = agent
-    ? `${SYSTEM_PROMPT}\n\n## Rol asignado para esta conversación: ${agent.name}\n${agent.instructions}\n\n(Las reglas de arriba siguen vigentes, incluida la frase exacta de derivación a un asesor humano.)`
-    : SYSTEM_PROMPT;
+    ? `${basePrompt}\n\n## Rol asignado para esta conversación: ${agent.name}\n${agent.instructions}\n\n(Las reglas de arriba siguen vigentes, incluida la frase exacta de derivación a un asesor humano.)`
+    : basePrompt;
 
   // 'human' (mensajes que el operador mandó desde el dashboard) se mapea a
   // 'assistant': para el LLM son respuestas previas emitidas desde este
