@@ -126,7 +126,16 @@ async function extractInbound(payload: MetaWebhookPayload): Promise<InboundMessa
         channel as "messenger" | "instagram",
         entry.id ?? ""
       );
-      if (!channelEnabledForOrg(allRows, orgId, channel)) continue;
+      if (!channelEnabledForOrg(allRows, orgId, channel)) {
+        // Aviso FUERTE: descartar en silencio perdía mensajes durante el
+        // onboarding (eventos que caen a la agencia con el canal apagado).
+        console.warn(
+          `[webhook] ⚠️ Evento de ${channel} para '${entry.id}' descartado: la organización ` +
+            `${orgId} tiene el canal deshabilitado. Si es de un cliente, prueba la conexión ` +
+            `de su canal (registra su ID) o completa el campo de ID manual en Canales.`
+        );
+        continue;
+      }
       for (const event of entry.messaging ?? []) {
         const senderId = event.sender?.id;
         const text = event.message?.text;
@@ -154,7 +163,13 @@ async function extractInbound(payload: MetaWebhookPayload): Promise<InboundMessa
           "whatsapp_api",
           value.metadata?.phone_number_id ?? ""
         );
-        if (!channelEnabledForOrg(allRows, orgId, "whatsapp_api")) continue;
+        if (!channelEnabledForOrg(allRows, orgId, "whatsapp_api")) {
+          console.warn(
+            `[webhook] ⚠️ Evento de whatsapp_api para '${value.metadata?.phone_number_id}' ` +
+              `descartado: la organización ${orgId} tiene el canal deshabilitado.`
+          );
+          continue;
+        }
         for (const message of value.messages) {
           if (message.type !== "text" || !message.from || !message.text?.body) continue;
           const from = message.from;

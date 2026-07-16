@@ -224,16 +224,22 @@ export async function resolveOrgForEvent(
     channel === "messenger" ? "page_id" : channel === "instagram" ? "ig_user_id" : "phone_number_id";
   const channelRows = rows.filter((r) => r.channel === channel);
 
-  const match = channelRows.find((r) => r.config?.[idKey] === recipientId);
+  // Match por ID registrado. Si dos organizaciones tienen el mismo ID (una
+  // config vieja deshabilitada tras migrar un cliente), gana la HABILITADA.
+  const matches = channelRows.filter((r) => !!recipientId && r.config?.[idKey] === recipientId);
+  const match = matches.find((r) => r.enabled) ?? matches[0];
   if (match) return match.org_id;
 
-  const enabled = channelRows.filter((r) => r.enabled);
-  if (enabled.length === 1) return enabled[0].org_id;
+  // Fallback de organización única: SOLO cuentan las habilitadas cuyo ID
+  // aún no se conoce — si una fila tiene un ID registrado DISTINTO al del
+  // evento, se sabe positivamente que el evento no es suyo.
+  const candidates = channelRows.filter((r) => r.enabled && !r.config?.[idKey]);
+  if (candidates.length === 1) return candidates[0].org_id;
 
   console.warn(
     `[webhook] Evento de ${channel} para '${recipientId}' sin organización identificable ` +
-      `(${enabled.length} organizaciones con el canal activo) — se asigna a la agencia. ` +
-      `Prueba la conexión del canal en la organización correcta para registrar su ID.`
+      `(${candidates.length} organizaciones con el canal activo sin ID registrado) — se asigna ` +
+      `a la agencia. Prueba la conexión del canal en la organización correcta para registrar su ID.`
   );
   return AGENCY_ORG_ID;
 }
@@ -380,6 +386,23 @@ export async function testChannel(
           {},
           "test"
         );
+        // El ID de la página (llave del enrutamiento del webhook) se
+        // intenta vía debug_token (profile_id): funciona incluso con tokens
+        // de solo mensajería que no pueden leer GET /me.
+        if (channel === "messenger") {
+          try {
+            const dbg = (await graphFetch(
+              `${GRAPH}/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`,
+              {},
+              "test"
+            )) as { data?: { profile_id?: string } };
+            if (dbg.data?.profile_id) {
+              await rememberChannelId(orgId, "messenger", "page_id", dbg.data.profile_id);
+            }
+          } catch {
+            /* best-effort: el campo manual page_id del dashboard cubre el resto */
+          }
+        }
         return {
           ok: true,
           detail:

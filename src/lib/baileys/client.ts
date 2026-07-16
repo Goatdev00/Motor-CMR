@@ -337,30 +337,33 @@ export function getOpenSession(
   return null;
 }
 
-// Números de las cuentas conectadas: el handler los usa para ignorar
-// mensajes entre cuentas propias (los avisos a vendedores dispararían un
-// loop de respuestas bot↔bot entre dos sesiones nuestras).
-export function getConnectedPhones(): Set<string> {
+// Números de las cuentas conectadas DE UNA ORGANIZACIÓN: el handler los usa
+// para ignorar mensajes entre cuentas propias (los avisos a vendedores
+// dispararían un loop de respuestas bot↔bot entre dos sesiones nuestras).
+export function getConnectedPhones(orgId: number): Set<string> {
   const phones = new Set<string>();
   for (const s of sessions.values()) {
+    if (s.orgId !== orgId) continue;
     const p = s.phone();
     if (s.isOpen() && p) phones.add(p);
   }
   return phones;
 }
 
-// Números "internos" que NUNCA son leads: los de TODAS las cuentas (según
-// la DB, aunque su sesión esté cerrada en este instante — un mensaje puede
-// entregarse en diferido con la emisora ya desconectada) y los teléfonos de
-// avisos de los miembros del equipo (si el vendedor responde al aviso desde
-// su WhatsApp personal, no debe nacer un lead basura con respuestas de IA).
-// El bot lo refresca en su tick.
-let internalPhones = new Set<string>();
+// Números "internos" que NUNCA son leads, POR ORGANIZACIÓN: los de las
+// cuentas de esa organización (según la DB, aunque su sesión esté cerrada)
+// y los teléfonos de avisos de SU equipo. Segmentado por organización: el
+// número del vendedor del cliente B puede ser un lead legítimo del cliente
+// A — un set global lo descartaba. El bot lo refresca en su tick.
+let internalPhonesByOrg = new Map<number, Set<string>>();
 
-export function setInternalPhones(phones: Set<string>): void {
-  internalPhones = phones;
+export function setInternalPhones(byOrg: Map<number, Set<string>>): void {
+  internalPhonesByOrg = byOrg;
 }
 
-export function isInternalPhone(phone: string): boolean {
-  return internalPhones.has(phone) || getConnectedPhones().has(phone);
+export function isInternalPhone(phone: string, orgId: number): boolean {
+  return (
+    (internalPhonesByOrg.get(orgId)?.has(phone) ?? false) ||
+    getConnectedPhones(orgId).has(phone)
+  );
 }

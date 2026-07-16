@@ -679,6 +679,20 @@ export async function releaseOutboxFailure(
 
 // Al arrancar el bot: filas que quedaron 'enviando' (sent=3) porque el
 // proceso murió en medio de una entrega vuelven a pendiente.
+// Difiere un envío pendiente unos segundos SIN quemar intentos. El bot lo
+// usa cuando la organización del item no puede entregar ahora (sesión caída
+// o canal apagado): sin esto, esos items taponaban el limit del lote y
+// causaban inanición para las DEMÁS organizaciones.
+export async function deferOutboxItem(id: number, seconds: number): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb
+    .from("outbox")
+    .update({ scheduled_at: epoch() + seconds })
+    .eq("id", id)
+    .eq("sent", 0);
+  if (error) fail("defer outbox", error.message);
+}
+
 export async function resetInFlightOutbox(): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb.from("outbox").update({ sent: 0 }).eq("sent", 3);
@@ -1086,6 +1100,18 @@ export async function releaseEmailFailure(
   return discarded;
 }
 
+// Difiere un correo pendiente SIN quemar intentos (organización con Mailing
+// apagado o límite alcanzado: sus filas no deben taponar el lote global).
+export async function deferEmail(id: number, seconds: number): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb
+    .from("email_queue")
+    .update({ scheduled_at: epoch() + seconds })
+    .eq("id", id)
+    .eq("sent", 0);
+  if (error) fail("defer email", error.message);
+}
+
 export async function resetInFlightEmails(): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb.from("email_queue").update({ sent: 0 }).eq("sent", 3);
@@ -1309,6 +1335,21 @@ export async function claimAlarmFire(
     .select("id");
   if (error) fail("claim alarm", error.message);
   return (data ?? []).length > 0;
+}
+
+// Difiere una alarma vencida que NO puede dispararse aún (p.ej. correo sin
+// SMTP configurado): sin esto ocupaba el lote de vencidas para siempre y
+// bloqueaba las alarmas de otras organizaciones. Condicional al next_fire_at
+// conocido: si el operador la reprogramó en paralelo, su cambio manda.
+export async function deferAlarm(alarm: Alarm, seconds: number): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb
+    .from("alarms")
+    .update({ next_fire_at: epoch() + seconds })
+    .eq("id", alarm.id)
+    .eq("next_fire_at", alarm.next_fire_at)
+    .eq("active", true);
+  if (error) fail("defer alarm", error.message);
 }
 
 export async function setAlarmError(id: number, message: string): Promise<void> {

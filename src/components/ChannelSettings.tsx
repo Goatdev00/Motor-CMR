@@ -37,6 +37,11 @@ const META_CARDS: {
     description: "Mensajes de tu página de Facebook. Requiere el token de la página con pages_messaging.",
     fields: [
       { key: "page_access_token", label: "Page Access Token", placeholder: "EAAG...", secret: true },
+      {
+        key: "page_id",
+        label: "ID de la página (se detecta solo al probar conexión; manual si hay varias organizaciones)",
+        placeholder: "877996495392097",
+      },
     ],
   },
   {
@@ -45,7 +50,12 @@ const META_CARDS: {
     description:
       "Mensajes directos de tu cuenta profesional vinculada a la página. Requiere instagram_manage_messages.",
     fields: [
-      { key: "page_access_token", label: "Page Access Token", placeholder: "EAAG...", secret: true },
+      { key: "page_access_token", label: "Token (IGAA… del caso de uso de Instagram, o EAAG… de página)", placeholder: "IGAA...", secret: true },
+      {
+        key: "ig_user_id",
+        label: "ID de la cuenta de Instagram (se detecta solo al probar conexión con token IGAA…)",
+        placeholder: "17841475954669222",
+      },
     ],
   },
 ];

@@ -84,8 +84,8 @@ async function handleIncoming(
   // son leads. Sin este guard, la sesión B respondería con IA al aviso "se
   // te asignó el lead X" de la cuenta A (loop bot↔bot), y la respuesta de
   // un vendedor a su aviso crearía un lead basura atendido por la IA.
-  if (isInternalPhone(phone)) {
-    console.log(`[bot] Mensaje de un número interno (${phone}) ignorado`);
+  if (isInternalPhone(phone, orgId)) {
+    console.log(`[bot] Mensaje de un número interno (${phone}) ignorado (org ${orgId})`);
     return;
   }
 

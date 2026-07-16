@@ -8,6 +8,9 @@ import {
   claimEmail,
   claimOutboxItem,
   countEmailsSentSince,
+  deferAlarm,
+  deferEmail,
+  deferOutboxItem,
   enqueueEmails,
   enqueueNotify,
   getConversationById,
@@ -30,6 +33,7 @@ import {
   updateWaAccount,
   type Alarm,
   type ChannelSettingsRow,
+  type EmailQueueItem,
   type OutboxItem,
   type TeamMember,
   type WaAccount,
@@ -205,27 +209,45 @@ function migrateLegacyAuthDir(firstAccountId: number | undefined): void {
   console.log(`[bot] Credenciales migradas: ./auth/ → ./auth/acc-${firstAccountId}/`);
 }
 
-// Teléfonos internos (cuentas propias + teléfonos de avisos del equipo):
-// el handler los ignora como remitentes. Los de miembros se refrescan cada
-// ~30s; los de cuentas, en cada tick junto con wa_accounts.
-let memberNotifyPhones: string[] = [];
+// Teléfonos internos POR ORGANIZACIÓN (cuentas propias + teléfonos de
+// avisos del equipo de esa organización): el handler los ignora como
+// remitentes SOLO dentro de su organización — el vendedor del cliente B
+// puede ser un lead legítimo del cliente A. Los de miembros se refrescan
+// cada ~30s; los de cuentas, en cada tick junto con wa_accounts.
+let memberPhonesByOrg = new Map<number, string[]>();
 let internalPhonesTick = 0;
 
 async function refreshInternalPhones(accounts: WaAccount[]): Promise<void> {
   if (internalPhonesTick % 15 === 0) {
     try {
       const members = await listTeamMembers();
-      memberNotifyPhones = members
-        .map((m) => m.notify_phone)
-        .filter((p): p is string => !!p);
+      const byOrg = new Map<number, string[]>();
+      for (const m of members) {
+        if (!m.notify_phone) continue;
+        const list = byOrg.get(m.org_id) ?? [];
+        list.push(m.notify_phone);
+        byOrg.set(m.org_id, list);
+      }
+      memberPhonesByOrg = byOrg;
     } catch {
       /* se conserva la lista anterior */
     }
   }
   internalPhonesTick++;
-  const phones = new Set<string>(memberNotifyPhones);
-  for (const a of accounts) if (a.phone) phones.add(a.phone);
-  setInternalPhones(phones);
+  const byOrg = new Map<number, Set<string>>();
+  for (const [orgId, phones] of memberPhonesByOrg) {
+    byOrg.set(orgId, new Set(phones));
+  }
+  for (const a of accounts) {
+    if (!a.phone) continue;
+    let set = byOrg.get(a.org_id);
+    if (!set) {
+      set = new Set();
+      byOrg.set(a.org_id, set);
+    }
+    set.add(a.phone);
+  }
+  setInternalPhones(byOrg);
 }
 
 // ── Alarmas (renovaciones, pagos, recordatorios) ────────────
@@ -314,6 +336,9 @@ async function flushAlarms(
             /* siguiente tick */
           }
         }
+        // Diferir 5 min: una alarma bloqueada no debe ocupar el lote de
+        // vencidas para siempre (inanición de las demás organizaciones).
+        deferAlarm(alarm, 300).catch(() => undefined);
         continue;
       }
     }
@@ -430,11 +455,23 @@ async function flushEmailQueue(
     byOrg.set(item.org_id, list);
   }
 
+  // Difiere las filas de una organización que no puede enviar ahora, para
+  // que no taponen el lote global (inanición de las demás organizaciones).
+  const deferOrg = (items: EmailQueueItem[], seconds: number) => {
+    for (const item of items) deferEmail(item.id, seconds).catch(() => undefined);
+  };
+
   for (const [orgId, items] of byOrg) {
     const row = settingsByOrg.get(orgId)?.["email"];
-    if (!row?.enabled) continue; // esta organización no tiene Mailing activo
+    if (!row?.enabled) {
+      deferOrg(items, 300); // Mailing apagado: reintentar en 5 min
+      continue;
+    }
     const config = parseEmailConfig(row);
-    if (!config) continue; // cuenta incompleta: no hay nada que hacer
+    if (!config) {
+      deferOrg(items, 300); // cuenta incompleta: reintentar en 5 min
+      continue;
+    }
 
     let allowance = 2;
     const now = Math.floor(Date.now() / 1000);
@@ -446,7 +483,10 @@ async function flushEmailQueue(
       const sentLastDay = await countEmailsSentSince(now - 86400, orgId);
       allowance = Math.min(allowance, config.maxPerDay - sentLastDay);
     }
-    if (allowance <= 0) continue; // límite alcanzado: se retoma al liberarse
+    if (allowance <= 0) {
+      deferOrg(items, 60); // límite alcanzado: reintentar en 1 min
+      continue;
+    }
 
     for (const item of items.slice(0, allowance)) {
       let claimed = false;
@@ -612,7 +652,12 @@ async function flushOutbox(
   const pending = await getPendingOutbox(20, [...disabledChannels]);
   for (const item of pending) {
     if (sentUnrecorded.has(item.id) || pendingFinalize.has(item.id)) continue;
-    if (!isDeliverable(item, settingsByOrg)) continue; // su organización no puede entregar ahora
+    if (!isDeliverable(item, settingsByOrg)) {
+      // Su organización no puede entregar ahora: se difiere 30s para que no
+      // tapone el lote de las demás (sin quemar intentos).
+      deferOutboxItem(item.id, 30).catch(() => undefined);
+      continue;
+    }
 
     // Reclamo condicional (sent=0 → 3): si el operador canceló o reprogramó
     // el seguimiento (o borró la conversación) mientras este lote estaba en

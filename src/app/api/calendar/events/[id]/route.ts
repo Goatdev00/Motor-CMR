@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { deleteCalendarEvent, updateCalendarEvent } from "@/lib/db";
+import { deleteCalendarEvent, getConversationById, updateCalendarEvent } from "@/lib/db";
 import { parseEventInput } from "@/lib/calendar";
 import { requireMember } from "@/lib/auth";
 
@@ -26,6 +26,14 @@ export async function PATCH(
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
     if (Object.keys(parsed.draft).length === 0) {
       return NextResponse.json({ error: "Nada que actualizar" }, { status: 400 });
+    }
+
+    // Guarda multi-org: re-vincular a un lead exige que sea de ESTA organización.
+    if (parsed.draft.conversation_id != null) {
+      const convo = await getConversationById(parsed.draft.conversation_id, orgId);
+      if (!convo) {
+        return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
+      }
     }
 
     const event = await updateCalendarEvent(id, parsed.draft, orgId);

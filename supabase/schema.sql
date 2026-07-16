@@ -731,9 +731,17 @@ create table if not exists wa_accounts (
 
 alter table wa_accounts enable row level security;
 
--- Migración desde la instalación de una sola cuenta.
-insert into wa_accounts (label)
-select 'Principal' where not exists (select 1 from wa_accounts);
+-- Migración desde la instalación de una sola cuenta. SOLO aplica en bases
+-- pre-multi-organización (organizations aún no existe en este punto del
+-- archivo en una base nueva): en una base ya migrada, que la tabla esté
+-- vacía significa que las organizaciones borraron sus cuentas a propósito —
+-- resucitar una 'Principal' habilitada arrancaría una sesión fantasma.
+do $$ begin
+  if to_regclass('public.organizations') is null
+     and not exists (select 1 from wa_accounts) then
+    insert into wa_accounts (label) values ('Principal');
+  end if;
+end $$;
 
 -- Miembros del equipo. El rol es informativo (el dashboard no tiene login);
 -- lo operativo es el enrutamiento: a quién se asignan los leads y a qué
@@ -870,10 +878,17 @@ alter table team_members add column if not exists password_hash text;
 create unique index if not exists idx_team_members_username
   on team_members (lower(username)) where username is not null;
 
+-- Cuenta maestra SOLO como bootstrap: se crea únicamente si NO existe
+-- ningún Admin con acceso real (activo, con usuario y contraseña). Antes la
+-- guarda miraba solo el nombre 'goatdev': renombrar/borrar esa cuenta hacía
+-- que cada re-ejecución la RESUCITARA con la contraseña por defecto —
+-- una puerta trasera conocida en una plataforma multi-cliente.
 insert into team_members (name, role, username, password_hash)
 select 'Goatdev', 'ADMIN', 'goatdev', crypt('goatdev123', gen_salt('bf'))
 where not exists (
-  select 1 from team_members where username is not null and lower(username) = 'goatdev'
+  select 1 from team_members
+  where role = 'ADMIN' and active
+    and username is not null and password_hash is not null
 );
 
 -- Login: devuelve la fila del miembro si usuario+contraseña coinciden y

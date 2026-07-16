@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   createCalendarEvent,
+  getConversationById,
   listCalendarEvents,
   listFollowUpsBetween,
   type CalendarEventDraft,
@@ -62,7 +63,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null);
     const parsed = parseEventInput(body, false);
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
-    const event = await createCalendarEvent(orgId, parsed.draft as CalendarEventDraft);
+    const draft = parsed.draft as CalendarEventDraft;
+    // Guarda multi-org: el lead vinculado debe ser de ESTA organización.
+    if (draft.conversation_id != null) {
+      const convo = await getConversationById(draft.conversation_id, orgId);
+      if (!convo) {
+        return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
+      }
+    }
+    const event = await createCalendarEvent(orgId, draft);
     return NextResponse.json({ event });
   } catch (err) {
     return errorResponse(err);
