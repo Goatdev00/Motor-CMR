@@ -461,7 +461,7 @@
       <ul>
         <li>La cuenta personal de Facebook que sea <b>administradora de su página</b> de Facebook.</li>
         <li>Su página de Facebook y (si usará Instagram) la cuenta de Instagram <b>profesional</b> vinculada a esa página.</li>
-        <li>El dashboard publicado en una dirección <b>HTTPS pública</b> (para el webhook del paso 8).</li>
+        <li>El dashboard publicado en una dirección <b>HTTPS pública</b> (para el webhook del paso 5).</li>
       </ul>
     </div>
 
@@ -496,22 +496,43 @@
         </div>
       </li>
       <li>
-        <h3>Conecte su página de Facebook — los permisos se otorgan al conectar</h3>
-        <p>En el Panel, pulse el renglón <span class="clickpath">Personalizar el caso de uso “Interactuar con los clientes en Messenger from Meta”</span>. Se abre la configuración de Messenger:</p>
-        <ul>
-          <li>Busque la sección <b>“Páginas conectadas”</b> (o “Generar tokens de acceso” / “Access Tokens”) y pulse <b>Conectar</b> (o <b>“Agregar o quitar páginas”</b>).</li>
-          <li>Se abre una ventana de Facebook: <b>elija su página</b> y pulse Siguiente. Si la ventana también le muestra la cuenta de <b>Instagram</b> vinculada, márquela de una vez.</li>
-          <li>La ventana termina mostrando lo que la app podrá hacer (administrar y acceder a los mensajes). Deje todo <b>activado</b> y pulse <b>Listo / Aceptar</b>.</li>
-        </ul>
-        <p>Los permisos del caso de uso (<code>pages_messaging</code> y compañía) quedan otorgados con esa única conexión — no hay que pedirlos uno por uno en ninguna otra pantalla.</p>
+        <h3>Copie la “Clave secreta de la app” (App Secret)</h3>
+        <p>En el menú lateral izquierdo de la app (los iconos de abajo): <span class="clickpath">Configuración de la app › Básica</span>. En el campo <b>“Clave secreta de la app”</b> pulse <b>Mostrar</b> (pide su contraseña de Facebook) y copie el valor. Lo necesitará en el paso siguiente.</p>
       </li>
       <li>
-        <h3>Conecte Instagram en su caso de uso</h3>
-        <p>De vuelta en el <b>Panel</b>, pulse <span class="clickpath">Personalizar el caso de uso “Administrar mensajes y contenido en Instagram”</span>:</p>
+        <h3>Configure el webhook — es lo PRIMERO dentro del caso de uso</h3>
+        <p>Al abrir el caso de uso de Messenger, la propia pantalla de Meta numera el flujo y el webhook es su punto <b>1</b>. Pero antes, prepare los datos en el <b>dashboard</b>:</p>
+        <ul>
+          <li>Vaya a <span class="kbd-path">Canales</span>, tarjeta <b>“Webhook de Meta (compartido)”</b>.</li>
+          <li>Copie la <b>URL del webhook</b> que aparece (<code>https://SU-DOMINIO/api/webhooks/meta</code>).</li>
+          <li>En <b>Verify Token</b> pulse <b>Generar</b> y copie el valor generado.</li>
+          <li>Pegue la <b>Clave secreta de la app</b> del paso anterior en el campo <b>App Secret</b>.</li>
+          <li>Pulse <b>Guardar webhook</b> — debe quedar guardado ANTES de verificar en Meta, si no la verificación falla.</li>
+        </ul>
+        <p>Ahora sí, en <b>Meta</b>: Panel → <span class="clickpath">Personalizar el caso de uso “Interactuar con los clientes en Messenger from Meta”</span>. Se abre la pantalla <b>“Configuración de la API de Messenger”</b>; en la sección <b>“1. Configurar webhooks”</b>:</p>
+        <ul>
+          <li>En <b>“URL de devolución de llamada”</b> pegue la URL del webhook.</li>
+          <li>En <b>“Token de verificación”</b> pegue el Verify Token — <b>idéntico, sin espacios</b>.</li>
+          <li>Pulse <b>Verificar y guardar</b>. Si algo falla, el botón <b>“Mostrar errores recientes”</b> de esa misma sección dice el motivo.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Conecte su página y suscríbala — sección “2. Generar tokens de acceso”</h3>
+        <p>En la misma pantalla, baje a la sección <b>“2. Generar tokens de acceso”</b>:</p>
+        <ul>
+          <li>Pulse <b>“Agregar página”</b>. Se abre una ventana de Facebook: <b>elija su página</b>, pulse Siguiente y deje <b>activado</b> todo lo que la app podrá hacer (administrar y acceder a los mensajes). Pulse <b>Listo / Aceptar</b>. Los permisos del caso de uso quedan otorgados con esa única conexión.</li>
+          <li>De vuelta en la sección 2, su página aparece en la lista. En la columna <b>“Suscripción al webhook”</b> pulse el botón azul <b>“Agregar suscripciones”</b> y marque el campo <b>messages</b>. Guarde. (Si dice <i>“No hay campos con suscripción”</i>, es exactamente esto lo que falta.)</li>
+        </ul>
+        <p>El botón <b>“Generar”</b> de la columna <b>Token</b> de esa misma fila es el que usará en la sección 5 para copiar el Page Access Token.</p>
+      </li>
+      <li>
+        <h3>Conecte Instagram</h3>
+        <p>En el submenú izquierdo del mismo caso de uso verá <span class="clickpath">Configuración de Instagram</span> — o, desde el Panel, <span class="clickpath">Personalizar el caso de uso “Administrar mensajes y contenido en Instagram”</span>:</p>
         <ul>
           <li>Pulse <b>Conectar</b> junto a la cuenta de Instagram e inicie sesión con la cuenta <b>profesional</b> de su negocio cuando lo pida.</li>
-          <li>Acepte la autorización que muestra la ventana (acceso a los mensajes): con eso queda otorgado <code>instagram_manage_messages</code>.</li>
-          <li>Si esta pantalla no le muestra su cuenta, complete primero los prerrequisitos del paso siguiente y reintente.</li>
+          <li>Acepte la autorización que muestra la ventana (acceso a los mensajes): con eso queda otorgado el permiso de DMs.</li>
+          <li>Suscriba también ahí el campo <b>messages</b> al webhook (misma URL y token del paso 5) si la pantalla lo ofrece por separado.</li>
+          <li>Si no le muestra su cuenta, complete primero los prerrequisitos del paso siguiente y reintente.</li>
         </ul>
       </li>
       <li>
@@ -523,36 +544,12 @@
         </ul>
       </li>
       <li>
-        <h3>Copie la “Clave secreta de la app” (App Secret)</h3>
-        <p>En el menú lateral izquierdo: <span class="clickpath">Configuración de la app › Básica</span>. En el campo <b>“Clave secreta de la app”</b> pulse <b>Mostrar</b> (pide su contraseña de Facebook) y copie el valor. Lo pegará en el dashboard en el paso siguiente.</p>
-      </li>
-      <li>
-        <h3>Configure el webhook — la “dirección de entrega” de los mensajes</h3>
-        <p>Meta envía cada mensaje entrante a una URL de su dashboard. Primero, en el <b>dashboard</b>:</p>
-        <ul>
-          <li>Vaya a <span class="kbd-path">Canales</span>, tarjeta <b>“Webhook de Meta (compartido)”</b>.</li>
-          <li>Copie la <b>URL del webhook</b> que aparece (<code>https://SU-DOMINIO/api/webhooks/meta</code>).</li>
-          <li>En <b>Verify Token</b> pulse <b>Generar</b> y copie el valor generado.</li>
-          <li>Pegue la <b>Clave secreta de la app</b> del paso anterior en el campo <b>App Secret</b>.</li>
-          <li>Pulse <b>Guardar webhook</b>.</li>
-        </ul>
-        <p>Ahora en <b>Meta</b>, registre esa URL en cada caso de uso:</p>
-        <ul>
-          <li>Panel → <span class="clickpath">Personalizar el caso de uso “Interactuar con los clientes en Messenger from Meta”</span> → busque la sección/tarjeta <b>“Configurar webhooks”</b>.</li>
-          <li>En <b>“URL de devolución de llamada”</b> (Callback URL) pegue la URL del webhook; en <b>“Token de verificación”</b> pegue el Verify Token — <b>idéntico, sin espacios</b>.</li>
-          <li>Pulse <b>Verificar y guardar</b>: si el token coincide, la ventana se cierra sin error (en el dashboard debió quedar guardado ANTES, si no la verificación falla).</li>
-          <li>En esa misma pantalla, en la fila de su página, pulse <b>“Agregar suscripciones”</b> y marque el campo <b>messages</b>. Guarde.</li>
-          <li>Repita en el caso de uso de <b>Instagram</b> (<span class="clickpath">Personalizar el caso de uso “Administrar mensajes y contenido en Instagram”</span> → sección de webhooks): misma URL, mismo token, y suscriba <b>messages</b>.</li>
-        </ul>
-        <p>Si usará WhatsApp API, este mismo webhook se registra dentro de su caso de uso — está indicado en la sección 4, paso 3.</p>
-      </li>
-      <li>
         <h3>Entienda el estado de la app: “Sin publicar” vs publicada</h3>
         <p>En el menú lateral izquierdo verá la entrada <span class="clickpath">Publicar</span> con la etiqueta <b>“Sin publicar”</b>:</p>
         <ul>
           <li><b>Sin publicar (en desarrollo)</b>: todo funciona, pero SOLO para las personas con rol en la app. Perfecto para probar. Para agregar a alguien: menú izquierdo <span class="clickpath">Roles de la app › Roles</span> → <b>Agregar personas</b> (como tester basta).</li>
           <li>La entrada <span class="clickpath">Pruebas</span> del menú (y el renglón “Probar casos de uso” del Panel) le permiten validar cada caso antes de publicar.</li>
-          <li><b>Publicada</b>: funciona para el público general. En <span class="clickpath">Publicar</span> Meta le lista los requisitos — normalmente la <b>Verificación del negocio</b> (business.facebook.com → Centro de seguridad) y aceptar las condiciones de cada caso de uso. Hágalo cuando las pruebas internas ya funcionen.</li>
+          <li><b>Para el público general</b>: la sección <b>“3. Completar el proceso de revisión de apps”</b> del caso de uso (botón <b>“Solicitar permiso”</b> de <code>pages_messaging</code>) y la entrada <span class="clickpath">Publicar</span> listan los requisitos — normalmente la <b>Verificación del negocio</b> (business.facebook.com → Centro de seguridad). Hágalo cuando las pruebas internas ya funcionen; para operar con sus propios clientes de prueba no hace falta.</li>
         </ul>
       </li>
     </ol>
@@ -601,7 +598,7 @@
       </li>
       <li>
         <h3>Registre el webhook para WhatsApp</h3>
-        <p>Dentro del mismo caso de uso de WhatsApp, entre al apartado <b>“Configuración”</b> (Configuration). En la sección <b>Webhook</b> pulse <b>Editar</b>, pegue la misma <b>URL</b> y el mismo <b>Verify Token</b> de la sección 3 (paso 8) y pulse <b>Verificar y guardar</b>. Luego, en <b>“Campos de webhook”</b> (Webhook fields), pulse <b>Administrar</b> y suscriba el campo <b>messages</b>.</p>
+        <p>Dentro del mismo caso de uso de WhatsApp, entre al apartado <b>“Configuración”</b> (Configuration). En la sección <b>Webhook</b> pulse <b>Editar</b>, pegue la misma <b>URL</b> y el mismo <b>Verify Token</b> de la sección 3 (paso 5) y pulse <b>Verificar y guardar</b>. Luego, en <b>“Campos de webhook”</b> (Webhook fields), pulse <b>Administrar</b> y suscriba el campo <b>messages</b>.</p>
       </li>
       <li>
         <h3>Genere el token permanente</h3>
@@ -645,7 +642,7 @@
     <div class="req">
       <strong>Necesita</strong>
       <ul>
-        <li>La <a class="ext" href="#app-meta">sección 3</a> completa (pasos 4 y 8 en particular).</li>
+        <li>La <a class="ext" href="#app-meta">sección 3</a> completa (pasos 5 y 6 en particular).</li>
       </ul>
     </div>
 
@@ -654,8 +651,8 @@
         <h3>Genere el token de la página</h3>
         <p>En <a class="ext" href="https://developers.facebook.com">developers.facebook.com</a> → <span class="clickpath">Mis apps</span> → su app → Panel → <span class="clickpath">Personalizar el caso de uso “Interactuar con los clientes en Messenger from Meta”</span>:</p>
         <ul>
-          <li>En la sección <b>“Páginas conectadas”</b> (o “Generar tokens de acceso”) ubique la fila de su página (quedó conectada en la sección 3, paso 4).</li>
-          <li>Pulse el botón <b>“Generar token”</b> de esa fila.</li>
+          <li>Baje a la sección <b>“2. Generar tokens de acceso”</b> y ubique la fila de su página (quedó conectada en la sección 3, paso 6).</li>
+          <li>En la columna <b>Token</b>, pulse el botón <b>“Generar”</b>.</li>
           <li>En la ventana que se abre, marque la casilla <b>“Entiendo”</b> — solo entonces el token se muestra completo — y pulse <b>Copiar</b>. Es una cadena larga que empieza por <code>EAAG…</code>.</li>
         </ul>
       </li>
@@ -675,7 +672,7 @@
 
     <div class="tip">
       <strong>Si no llega el mensaje</strong>
-      Recuerde: con la app <b>“Sin publicar”</b> solo cuentan los mensajes de personas con rol en la app (sección 3, paso 9). Verifique también que la suscripción <code>messages</code> de su página esté marcada (sección 3, paso 8).
+      Recuerde: con la app <b>“Sin publicar”</b> solo cuentan los mensajes de personas con rol en la app (sección 3, paso 9). Verifique también que la suscripción <code>messages</code> de su página esté marcada (sección 3, paso 6).
     </div>
   </section>
 
@@ -692,7 +689,7 @@
     <div class="req">
       <strong>Necesita</strong>
       <ul>
-        <li>La <a class="ext" href="#app-meta">sección 3</a> completa, incluidos la conexión de Instagram (pasos 5 y 6) y su webhook con <code>messages</code> suscrito (paso 8).</li>
+        <li>La <a class="ext" href="#app-meta">sección 3</a> completa, incluidos la conexión de Instagram (pasos 7 y 8) y el webhook con <code>messages</code> suscrito (pasos 5 a 7).</li>
         <li>El <b>Page Access Token</b> generado en la sección 5 (sirve para ambos canales: los permisos de Instagram se otorgaron junto con los de la página en un solo paso).</li>
       </ul>
     </div>
@@ -873,11 +870,11 @@
       </tr>
       <tr>
         <td>Los mensajes de Messenger/Instagram/WhatsApp API no llegan a Chats.</td>
-        <td>Casi siempre es el webhook o el estado de la app: (1) suscripción del campo <code>messages</code> marcada en cada caso de uso (sección 3, paso 8 y sección 4, paso 3); (2) app “Sin publicar” → solo personas con rol en la app pueden escribir (sección 3, paso 9); (3) para Instagram, “Permitir el acceso a los mensajes” activo en la app de Instagram (sección 3, paso 6).</td>
+        <td>Casi siempre es el webhook o el estado de la app: (1) suscripción del campo <code>messages</code> marcada en cada caso de uso (sección 3, pasos 6 y 7, y sección 4, paso 3); (2) app “Sin publicar” → solo personas con rol en la app pueden escribir (sección 3, paso 9); (3) para Instagram, “Permitir el acceso a los mensajes” activo en la app de Instagram (sección 3, paso 8).</td>
       </tr>
       <tr>
         <td>“Probar conexión” de un canal de Meta falla.</td>
-        <td>El token pudo caducar o carecer de permisos. Genere uno nuevo: para Messenger/Instagram, “Generar token” junto a la página (sección 5, paso 1); para WhatsApp API, el token permanente del usuario del sistema (sección 4, paso 4). Guárdelo de nuevo en el dashboard.</td>
+        <td>El token pudo caducar o carecer de permisos. Genere uno nuevo: para Messenger/Instagram, botón “Generar” de la columna Token, junto a la página (sección 5, paso 1); para WhatsApp API, el token permanente del usuario del sistema (sección 4, paso 4). Guárdelo de nuevo en el dashboard.</td>
       </tr>
       <tr>
         <td>Los correos quedan “Pendiente” y no salen.</td>
