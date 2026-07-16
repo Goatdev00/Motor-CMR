@@ -34,9 +34,9 @@ const ACCOUNT_FIELDS: { key: string; label: string; placeholder: string; secret?
   { key: "host", label: "Servidor SMTP", placeholder: "smtp.gmail.com" },
   { key: "port", label: "Puerto (465 SSL / 587 STARTTLS)", placeholder: "465" },
   { key: "user", label: "Usuario / correo", placeholder: "ventas@tudominio.com" },
-  { key: "password", label: "Contraseña (en Gmail: contraseña de aplicación)", placeholder: "••••••••", secret: true },
+  { key: "password", label: "Contraseña (Gmail: contraseña de aplicación · Resend: API key)", placeholder: "••••••••", secret: true },
   { key: "from_name", label: "Nombre del remitente (opcional)", placeholder: "Motor Advertising" },
-  { key: "from_email", label: "Correo remitente (opcional, default: usuario)", placeholder: "ventas@tudominio.com" },
+  { key: "from_email", label: "Correo remitente (con Resend es OBLIGATORIO: tu@tudominio.co)", placeholder: "hola@motoradvertising.co" },
   { key: "max_per_hour", label: "Límite por hora (opcional, vacío = sin límite)", placeholder: "p.ej. 100" },
   { key: "max_per_day", label: "Límite por día (opcional, vacío = sin límite)", placeholder: "p.ej. 500" },
 ];
@@ -141,6 +141,23 @@ export default function MailingPanel() {
     }
   };
 
+  // Atajos que rellenan servidor/puerto/usuario según el proveedor. Con
+  // Resend el usuario SMTP es SIEMPRE la palabra 'resend' y la contraseña es
+  // el API key; el remitente debe ser una dirección del dominio verificado.
+  const applyPreset = (preset: "gmail" | "resend") => {
+    setTestResult(null);
+    if (preset === "resend") {
+      setAccount((prev) => ({
+        ...prev,
+        host: "smtp.resend.com",
+        port: "465",
+        user: "resend",
+      }));
+    } else {
+      setAccount((prev) => ({ ...prev, host: "smtp.gmail.com", port: "465" }));
+    }
+  };
+
   const testAccount = async () => {
     setAccountBusy(true);
     setTestResult(null);
@@ -220,8 +237,9 @@ export default function MailingPanel() {
             <div>
               <h2 className="text-sm font-semibold text-neutral-100">Cuenta de correo (SMTP)</h2>
               <p className="mt-1 text-xs text-neutral-400">
-                Gmail (con contraseña de aplicación), Outlook o tu dominio. Los límites son
-                opcionales: si los dejas vacíos, no se aplica ninguno.
+                Gmail (con contraseña de aplicación), Resend (para enviar desde tu propio
+                dominio) o cualquier SMTP. Los límites son opcionales: si los dejas vacíos, no
+                se aplica ninguno. El paso a paso está en Configuración → Guía de conexión.
               </p>
             </div>
             <button
@@ -241,6 +259,25 @@ export default function MailingPanel() {
                   enabled ? "left-[22px]" : "left-0.5"
                 }`}
               />
+            </button>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium text-neutral-500">Rellenar para:</span>
+            <button
+              onClick={() => applyPreset("gmail")}
+              disabled={accountBusy}
+              className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            >
+              Gmail
+            </button>
+            <button
+              onClick={() => applyPreset("resend")}
+              disabled={accountBusy}
+              title="Envía desde tu propio dominio (p.ej. hola@motoradvertising.co). Solo te falta pegar el API key y el correo remitente."
+              className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            >
+              Resend (tu dominio)
             </button>
           </div>
 

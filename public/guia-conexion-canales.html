@@ -332,7 +332,7 @@
       <li><a href="#whatsapp-api">WhatsApp Business (API oficial)<span class="toc-note">requiere la sección 3</span></a></li>
       <li><a href="#messenger">Facebook Messenger<span class="toc-note">requiere la sección 3</span></a></li>
       <li><a href="#instagram">Instagram (mensajes directos)<span class="toc-note">requiere la sección 3</span></a></li>
-      <li><a href="#correo">Correo electrónico (SMTP)<span class="toc-note">10 minutos</span></a></li>
+      <li><a href="#correo">Correo electrónico — Gmail o su propio dominio (Resend)<span class="toc-note">10–20 minutos</span></a></li>
       <li><a href="#api-crm">API del CRM — conectar formularios y otras apps<span class="toc-note">para su desarrollador</span></a></li>
       <li><a href="#checklist">Lista de verificación final</a></li>
       <li><a href="#soporte">Problemas frecuentes y soporte</a></li>
@@ -383,7 +383,8 @@
           <tr><td>WhatsApp Business API</td><td>Sí</td><td>30–60 min (una vez)</td></tr>
           <tr><td>Facebook Messenger</td><td>Sí</td><td>10 min tras la sección 3</td></tr>
           <tr><td>Instagram (DMs)</td><td>Sí</td><td>10 min tras la sección 3</td></tr>
-          <tr><td>Correo (SMTP)</td><td>No</td><td>10 min</td></tr>
+          <tr><td>Correo — Gmail</td><td>No</td><td>10 min</td></tr>
+          <tr><td>Correo — su dominio (Resend)</td><td>No — solo acceso al DNS del dominio</td><td>15–20 min</td></tr>
         </table></div>
       </li>
     </ol>
@@ -722,56 +723,71 @@
     <div class="channel-head">
       <div class="channel-num">7</div>
       <div>
-        <h2>Correo electrónico (SMTP)</h2>
-        <p class="lead">Habilita los envíos de correo: campañas desde <b>Mailing</b>, contactos individuales o masivos desde <b>Leads</b> y alarmas por email. Funciona con Gmail, Outlook o el correo de su propio dominio. No requiere la app de Meta.</p>
+        <h2>Correo electrónico — Gmail o su propio dominio (Resend)</h2>
+        <p class="lead">Habilita los envíos de correo: campañas desde <b>Mailing</b>, contactos individuales o masivos desde <b>Leads</b> y alarmas por email. Hay dos caminos: <b>Opción A</b>, enviar desde una cuenta Gmail/Outlook que ya tenga (lo más rápido), u <b>Opción B</b>, enviar desde su propio dominio con Resend (p. ej. <code>hola@su-empresa.co</code> — se ve más profesional y llega mejor a la bandeja de entrada). No requiere la app de Meta.</p>
       </div>
     </div>
 
     <div class="req">
       <strong>Necesita</strong>
       <ul>
-        <li>Una cuenta de correo para enviar (recomendado: una dedicada, p. ej. <code>ventas@su-empresa.com</code>).</li>
-        <li>Si es <b>Gmail</b>: la verificación en dos pasos activa, para poder crear una “contraseña de aplicación”.</li>
+        <li><b>Opción A (Gmail):</b> una cuenta de correo para enviar (recomendado: una dedicada) con la verificación en dos pasos activa, para poder crear una “contraseña de aplicación”.</li>
+        <li><b>Opción B (Resend):</b> ser dueño de un dominio (p. ej. <code>su-empresa.co</code>) y poder entrar donde administra su DNS (GoDaddy, Cloudflare, Hostinger, etc.) para agregar unos registros. Resend es gratis hasta 3.000 correos/mes.</li>
       </ul>
     </div>
 
     <ol class="steps">
       <li>
-        <h3>Si usa Gmail: cree una contraseña de aplicación</h3>
+        <h3>Opción A — Gmail: cree una contraseña de aplicación</h3>
         <ul>
           <li>Entre a <a class="ext" href="https://myaccount.google.com">myaccount.google.com</a> → <b>Seguridad</b>.</li>
           <li>Active la <b>Verificación en dos pasos</b> si no la tiene.</li>
           <li>Busque <b>“Contraseñas de aplicaciones”</b> (App passwords), cree una nueva con el nombre “Dashboard ventas” y copie la clave de 16 letras que genera Google.</li>
-          <li>Esa clave (no su contraseña normal) es la que usará en el paso siguiente.</li>
+          <li>Esa clave (no su contraseña normal) es la que usará en el paso 3. Si eligió esta opción, salte el paso 2.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Opción B — Resend: verifique su dominio y genere el API key</h3>
+        <ul>
+          <li>Cree una cuenta gratis en <a class="ext" href="https://resend.com">resend.com</a> (sirve iniciar con Google o GitHub).</li>
+          <li>En el menú de la izquierda entre a <b>Domains</b> → <b>Add Domain</b> → escriba su dominio (p. ej. <code>su-empresa.co</code>) y confirme.</li>
+          <li>Resend le mostrará <b>3–4 registros DNS</b> (tipo TXT y MX, para DKIM y SPF). Abra en otra pestaña el sitio donde administra el dominio (GoDaddy, Cloudflare, Hostinger…), entre a la zona DNS y <b>copie cada registro tal cual</b>: mismo tipo, mismo nombre/host y mismo valor.</li>
+          <li>Vuelva a Resend y pulse <b>Verify DNS Records</b>. El estado pasará a <b>Verified</b> — a veces en minutos, a veces tarda hasta un par de horas en propagar. Puede continuar cuando esté en verde.</li>
+          <li>En el menú de la izquierda entre a <b>API Keys</b> → <b>Create API Key</b>, póngale un nombre (p. ej. “Dashboard ventas”), déjela con permiso de envío y <b>copie la clave completa</b> (empieza por <code>re_</code> y solo se muestra una vez).</li>
         </ul>
       </li>
       <li>
         <h3>Complete la cuenta en la pestaña Mailing</h3>
-        <p>En <span class="kbd-path">Mailing</span>, tarjeta <b>“Cuenta de correo (SMTP)”</b>:</p>
+        <p>En <span class="kbd-path">Mailing</span>, tarjeta <b>“Cuenta de correo (SMTP)”</b>. Los botones <b>“Rellenar para: Gmail / Resend”</b> completan solos el servidor, el puerto y el usuario — a usted solo le queda pegar la contraseña o el API key:</p>
         <div class="table-scroll"><table class="fields">
-          <tr><th>Campo</th><th>Gmail</th><th>Outlook / Microsoft 365</th></tr>
-          <tr><td><b>Servidor SMTP</b></td><td><code>smtp.gmail.com</code></td><td><code>smtp.office365.com</code></td></tr>
-          <tr><td><b>Puerto</b></td><td><code>465</code></td><td><code>587</code></td></tr>
-          <tr><td><b>Usuario / correo</b></td><td>su dirección completa</td><td>su dirección completa</td></tr>
-          <tr><td><b>Contraseña</b></td><td>contraseña de aplicación (16 letras)</td><td>su contraseña o clave de app</td></tr>
-          <tr><td><b>Nombre del remitente</b></td><td colspan="2">Lo que verá el cliente, p. ej. <i>Motor Advertising</i> (opcional)</td></tr>
-          <tr><td><b>Correo remitente</b></td><td colspan="2">Si difiere del usuario (opcional)</td></tr>
-          <tr><td><b>Límite por hora / día</b></td><td colspan="2">Opcionales. Sugerido en Gmail: 60/hora y 400/día para cuidar la reputación</td></tr>
+          <tr><th>Campo</th><th>Gmail</th><th>Outlook / Microsoft 365</th><th>Resend (su dominio)</th></tr>
+          <tr><td><b>Servidor SMTP</b></td><td><code>smtp.gmail.com</code></td><td><code>smtp.office365.com</code></td><td><code>smtp.resend.com</code></td></tr>
+          <tr><td><b>Puerto</b></td><td><code>465</code></td><td><code>587</code></td><td><code>465</code></td></tr>
+          <tr><td><b>Usuario / correo</b></td><td>su dirección completa</td><td>su dirección completa</td><td>la palabra <code>resend</code> (literal, así tal cual)</td></tr>
+          <tr><td><b>Contraseña</b></td><td>contraseña de aplicación (16 letras)</td><td>su contraseña o clave de app</td><td>el API key (<code>re_…</code>)</td></tr>
+          <tr><td><b>Nombre del remitente</b></td><td colspan="3">Lo que verá el cliente, p. ej. <i>Motor Advertising</i> (opcional)</td></tr>
+          <tr><td><b>Correo remitente</b></td><td colspan="2">Si difiere del usuario (opcional)</td><td><b>OBLIGATORIO:</b> una dirección de su dominio verificado, p. ej. <code>hola@su-empresa.co</code> (puede inventar el nombre: no hace falta “crear” el buzón)</td></tr>
+          <tr><td><b>Límite por hora / día</b></td><td colspan="3">Opcionales. Sugerido en Gmail: 60/hora y 400/día. En Resend el plan gratis admite 100/día</td></tr>
         </table></div>
       </li>
       <li>
         <h3>Guarde, pruebe y encienda</h3>
-        <p>Pulse <b>Guardar cuenta</b> → <b>Probar conexión</b> (debe responder “Conectado a …”). Luego active el interruptor verde de la tarjeta.</p>
+        <p>Pulse <b>Guardar cuenta</b> → <b>Probar conexión</b>. Con Gmail/Outlook debe responder “Conectado a …”; con Resend la prueba va más allá: valida el API key contra Resend y <b>confirma que su dominio esté verificado</b> — si faltan los registros DNS se lo dirá con exactitud. Cuando esté en verde, active el interruptor de la tarjeta.</p>
       </li>
       <li>
         <h3>Configure el “Responder a” de la sección Leads</h3>
-        <p>Al enviar correos desde <span class="kbd-path">Leads</span> → <b>Contactar</b> → pestaña <b>Correo</b>, el campo <b>“Responder a”</b> define a qué buzón llegan las respuestas de los clientes (puede ser distinto del remitente). Escriba el correo deseado y marque <b>“Guardar como predeterminado”</b> para que quede fijo en los próximos envíos.</p>
+        <p>Al enviar correos desde <span class="kbd-path">Leads</span> → <b>Contactar</b> → pestaña <b>Correo</b>, el campo <b>“Responder a”</b> define a qué buzón llegan las respuestas de los clientes (puede ser distinto del remitente). Escriba el correo deseado y marque <b>“Guardar como predeterminado”</b> para que quede fijo en los próximos envíos. Con Resend este campo es especialmente útil: envíe como <code>hola@su-empresa.co</code> y reciba las respuestas en el Gmail que ya usa.</p>
       </li>
     </ol>
 
     <div class="tip">
       <strong>Cómo se envían</strong>
       Los correos no salen todos de golpe: entran a una cola que el sistema despacha respetando los límites configurados. El estado de cada envío (pendiente / enviado / fallido) se ve al final de la pestaña <span class="kbd-path">Mailing</span>.
+    </div>
+
+    <div class="warn">
+      <strong>Resend solo ENVÍA — para recibir en su dominio necesita un extra</strong>
+      Resend no le da una bandeja de entrada: si alguien escribe directamente a <code>hola@su-empresa.co</code> (sin ser respuesta a un correo suyo), ese mensaje no llega a ningún lado. Dos soluciones: <b>gratis</b>, active <i>Email Routing</i> en Cloudflare (reenvía todo lo que llegue a su dominio hacia su Gmail actual); o <b>de pago</b>, contrate Google Workspace (~US$6/usuario/mes) para tener un buzón Gmail real con su dominio. Mientras tanto, el campo “Responder a” del paso 5 garantiza que las respuestas a sus campañas sí lleguen a su buzón de siempre.
     </div>
   </section>
 
