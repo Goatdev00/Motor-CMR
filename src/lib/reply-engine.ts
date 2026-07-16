@@ -117,6 +117,9 @@ export function enqueueForContact<T>(key: string, task: () => Promise<T>): Promi
 // ── Pipeline de entrada ─────────────────────────────────────
 
 export interface InboundMessage {
+  // Organización dueña del canal que recibió el mensaje: el lead nace en su
+  // espacio y se responde con SUS tokens/configuración.
+  orgId: number;
   channel: Channel;
   // Identificador del remitente en su canal (teléfono, PSID, IGSID).
   externalId: string;
@@ -145,9 +148,11 @@ export async function persistInbound(msg: InboundMessage): Promise<PersistedInbo
   const key = msg.dedupeKey ? `${msg.channel}:${msg.dedupeKey}` : null;
   if (isDuplicate(key)) return null;
 
-  console.log(`[bot] ← [${msg.channel}] ${msg.externalId}: "${msg.text.slice(0, 80)}"`);
+  console.log(
+    `[bot] ← [org ${msg.orgId}] [${msg.channel}] ${msg.externalId}: "${msg.text.slice(0, 80)}"`
+  );
 
-  const convo = await getOrCreateConversation(msg.channel, msg.externalId, {
+  const convo = await getOrCreateConversation(msg.orgId, msg.channel, msg.externalId, {
     name: msg.name ?? undefined,
     phone: msg.phone ?? undefined,
   });
@@ -196,8 +201,9 @@ export async function respondToInbound(
   // Palabras clave (sección Plantillas): respuesta determinista configurada
   // por el operador — tiene prioridad sobre el LLM y sobre la detección de
   // "quiero un humano". Por defecto solo dispara en modo AI; cada trigger
-  // puede optar por responder también en modo HUMANO.
-  const trigger = findMatchingTrigger(await getKeywordTriggersCached(), msg.text);
+  // puede optar por responder también en modo HUMANO. Las palabras son de
+  // la organización dueña de la conversación.
+  const trigger = findMatchingTrigger(await getKeywordTriggersCached(fresh.org_id), msg.text);
   if (trigger && (fresh.mode === "AI" || trigger.also_human)) {
     try {
       await msg.send(trigger.content);
@@ -241,6 +247,7 @@ export async function respondToInbound(
   // Equipo de IA: ¿qué agente atiende este mensaje? (por tema del mensaje,
   // continuidad de la conversación o comodín de flujo). null = prompt base.
   const selection = await selectAgentForInbound({
+    orgId: fresh.org_id,
     conversationId,
     text: msg.text,
     stage: fresh.stage ?? null,
@@ -259,7 +266,7 @@ export async function respondToInbound(
 
   let reply: string;
   try {
-    reply = await generateReply(history, selection?.agent ?? null);
+    reply = await generateReply(fresh.org_id, history, selection?.agent ?? null);
   } catch (err) {
     // Si el LLM falla (429, key inválida, etc.) NO se cae el proceso: el
     // mensaje del cliente ya quedó guardado y visible en el dashboard.

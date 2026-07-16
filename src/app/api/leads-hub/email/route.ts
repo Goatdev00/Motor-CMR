@@ -9,6 +9,7 @@ import {
   type EmailDraft,
 } from "@/lib/db";
 import { EMAIL_REGEX, renderTemplate, textToHtml } from "@/lib/mailer";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,11 @@ interface SendBody {
 
 export async function POST(req: NextRequest) {
   try {
-    const settings = await getAllChannelSettings();
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
+    const settings = await getAllChannelSettings(orgId);
     const emailRow = settings["email"];
     if (!emailRow?.enabled || !emailRow.config?.host || !emailRow.config?.user) {
       return NextResponse.json(
@@ -68,6 +73,7 @@ export async function POST(req: NextRequest) {
       const { data, error } = await sb
         .from("conversations")
         .select("id, name, company, email, stage")
+        .eq("org_id", orgId)
         .in("id", leadIds.slice(0, 2000));
       if (error) {
         return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
@@ -90,6 +96,7 @@ export async function POST(req: NextRequest) {
         seen.add(to);
         const vars = { nombre: lead.name, empresa: lead.company, email: to, etapa: lead.stage };
         drafts.push({
+          org_id: orgId,
           to_email: to,
           to_name: lead.name,
           subject: renderTemplate(subject, vars),
@@ -116,6 +123,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Correo destinatario inválido" }, { status: 400 });
       }
       drafts.push({
+        org_id: orgId,
         to_email: to,
         subject: renderTemplate(subject, { email: to }),
         html: renderTemplate(html, { email: to }),
@@ -152,7 +160,7 @@ export async function POST(req: NextRequest) {
     );
 
     if (body?.saveReplyToDefault && replyTo) {
-      await setAppSetting(REPLY_TO_SETTING, replyTo).catch(() => undefined);
+      await setAppSetting(orgId, REPLY_TO_SETTING, replyTo).catch(() => undefined);
     }
 
     return NextResponse.json({ ok: true, queued: drafts.length, batchId });

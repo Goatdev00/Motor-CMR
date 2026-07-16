@@ -16,6 +16,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
@@ -46,7 +47,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       return NextResponse.json({ error: "Nada que actualizar" }, { status: 400 });
     }
 
-    await updateWaAccount(id, patch);
+    await updateWaAccount(id, patch, orgId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
@@ -60,13 +61,14 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
 
     // Desvincular antes de eliminar: borrar una cuenta conectada dejaría la
     // sesión viva en el teléfono del usuario sin forma de cerrarla desde acá.
-    const account = (await listWaAccounts()).find((a) => a.id === id);
+    const account = (await listWaAccounts(orgId)).find((a) => a.id === id);
     if (!account) return NextResponse.json({ error: "Cuenta no encontrada" }, { status: 404 });
     if (account.status === "connected") {
       return NextResponse.json(
@@ -75,7 +77,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       );
     }
 
-    await deleteWaAccount(id);
+    await deleteWaAccount(id, orgId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

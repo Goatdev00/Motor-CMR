@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { randomUUID } from "crypto";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, requireMember } from "@/lib/auth";
 import {
   MAX_AGENTS,
   readAiAgentsDoc,
@@ -17,9 +17,11 @@ export const dynamic = "force-dynamic";
 // primero, mismo patrón que las palabras clave). El bot toma los cambios en
 // ≤15 s por su caché.
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const doc = await readAiAgentsDoc();
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const doc = await readAiAgentsDoc(auth.orgId);
     return NextResponse.json({ agents: doc.agents, rev: doc.rev });
   } catch (err) {
     return NextResponse.json(
@@ -33,6 +35,7 @@ export async function PUT(req: NextRequest) {
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const body = (await req.json().catch(() => null)) as {
       agents?: unknown;
@@ -89,7 +92,7 @@ export async function PUT(req: NextRequest) {
       seenNames.add(key);
     }
 
-    const current = await readAiAgentsDoc();
+    const current = await readAiAgentsDoc(orgId);
     const baseRev = typeof body.baseRev === "string" ? body.baseRev : null;
     if (current.rev !== null && baseRev !== current.rev) {
       return NextResponse.json(
@@ -104,7 +107,7 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    const rev = await saveAiAgents(agents);
+    const rev = await saveAiAgents(orgId, agents);
     return NextResponse.json({ ok: true, agents, rev });
   } catch (err) {
     return NextResponse.json(

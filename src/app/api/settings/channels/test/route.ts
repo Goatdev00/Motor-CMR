@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { invalidateChannelSettingsCache, testChannel } from "@/lib/meta";
 import { isChannel } from "@/lib/channels";
 import { getAllChannelSettings } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 import { verifyEmailConfig } from "@/lib/mailer";
 import { verifyLlmConfig } from "@/lib/llm";
 
@@ -42,6 +43,9 @@ function mergeConfig(
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = (await req.json().catch(() => null)) as {
       channel?: unknown;
@@ -51,20 +55,20 @@ export async function POST(req: NextRequest) {
 
     // Correo: verifica credenciales SMTP con lo guardado + lo del formulario.
     if (channel === "email") {
-      const row = (await getAllChannelSettings())["email"];
+      const row = (await getAllChannelSettings(orgId))["email"];
       const m = mergeConfig(row?.config, body?.config);
       if ("maskError" in m) return NextResponse.json({ ok: false, detail: m.maskError });
       const result = await verifyEmailConfig(
         row
           ? { ...row, config: m.merged }
-          : { channel: "email", enabled: false, config: m.merged, updated_at: 0 }
+          : { channel: "email", enabled: false, config: m.merged, updated_at: 0, org_id: orgId }
       );
       return NextResponse.json(result);
     }
 
     // IA: llamada mínima real con el proveedor/clave/modelo del formulario.
     if (channel === "llm") {
-      const row = (await getAllChannelSettings())["llm"];
+      const row = (await getAllChannelSettings(orgId))["llm"];
       const m = mergeConfig(row?.config, body?.config);
       if ("maskError" in m) return NextResponse.json({ ok: false, detail: m.maskError });
       const result = await verifyLlmConfig(m.merged);
@@ -84,7 +88,7 @@ export async function POST(req: NextRequest) {
         : undefined;
     // Sin cache: probar siempre con lo último guardado.
     invalidateChannelSettingsCache();
-    const result = await testChannel(channel, overrides);
+    const result = await testChannel(orgId, channel, overrides);
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(

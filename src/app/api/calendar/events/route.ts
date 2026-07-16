@@ -6,6 +6,7 @@ import {
   type CalendarEventDraft,
 } from "@/lib/db";
 import { parseEventInput } from "@/lib/calendar";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,9 @@ function errorResponse(err: unknown): NextResponse {
 
 // Eventos + seguimientos programados del CRM dentro de [from, to).
 export async function GET(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const from = Number(req.nextUrl.searchParams.get("from"));
     const to = Number(req.nextUrl.searchParams.get("to"));
@@ -41,8 +45,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Rango demasiado amplio" }, { status: 400 });
     }
     const [events, followups] = await Promise.all([
-      listCalendarEvents(from, to),
-      listFollowUpsBetween(from, to),
+      listCalendarEvents(orgId, from, to),
+      listFollowUpsBetween(orgId, from, to),
     ]);
     return NextResponse.json({ events, followups });
   } catch (err) {
@@ -51,11 +55,14 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = await req.json().catch(() => null);
     const parsed = parseEventInput(body, false);
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
-    const event = await createCalendarEvent(parsed.draft as CalendarEventDraft);
+    const event = await createCalendarEvent(orgId, parsed.draft as CalendarEventDraft);
     return NextResponse.json({ event });
   } catch (err) {
     return errorResponse(err);

@@ -8,6 +8,7 @@ import {
   upgradeApiLeadToWhatsapp,
 } from "@/lib/db";
 import { EMAIL_REGEX } from "@/lib/mailer";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,10 @@ function cleanText(raw: unknown, max: number): string {
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const body = (await req.json().catch(() => null)) as {
       rows?: ImportRow[];
       source?: string;
@@ -80,9 +85,9 @@ export async function POST(req: NextRequest) {
 
       // Dedupe cruzada (igual que la API pública): correo ya existente en el
       // canal 'api' + teléfono nuevo = se asciende la MISMA fila a WhatsApp.
-      let convo = phone && email ? await upgradeApiLeadToWhatsapp(email, phone) : null;
+      let convo = phone && email ? await upgradeApiLeadToWhatsapp(orgId, email, phone) : null;
       if (!convo) {
-        convo = await getOrCreateConversation(channel, externalId, {
+        convo = await getOrCreateConversation(orgId, channel, externalId, {
           name: name || undefined,
           phone,
         });

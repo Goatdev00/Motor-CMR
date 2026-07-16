@@ -3,6 +3,7 @@ import {
   deleteTeamMember,
   listAdminAccessIds,
   listTeamMembers,
+  listWaAccounts,
   setMemberPassword,
   TEAM_ROLES,
   updateTeamMember,
@@ -31,8 +32,8 @@ function normalizePhoneInput(raw: unknown): string | null | "invalid" {
 // gestionar el equipo. Nota: la comprobación es check-then-act (sin
 // transacción); con un solo Admin operando es suficiente, y la
 // recuperación extrema siempre existe vía SQL Editor de Supabase.
-async function isLastAdminWithAccess(target: TeamMember): Promise<boolean> {
-  const adminIds = await listAdminAccessIds();
+async function isLastAdminWithAccess(target: TeamMember, orgId: number): Promise<boolean> {
+  const adminIds = await listAdminAccessIds(orgId);
   return adminIds.length === 1 && adminIds[0] === target.id;
 }
 
@@ -40,6 +41,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
@@ -76,6 +78,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         const v = Number(body.wa_account_id);
         if (!Number.isInteger(v) || v <= 0) {
           return NextResponse.json({ error: "Cuenta inválida" }, { status: 400 });
+        }
+        // La cuenta debe ser de ESTA organización (la FK no distingue orgs).
+        const orgAccounts = await listWaAccounts(orgId);
+        if (!orgAccounts.some((a) => a.id === v)) {
+          return NextResponse.json(
+            { error: "Esa cuenta de WhatsApp no pertenece a tu organización" },
+            { status: 400 }
+          );
         }
         patch.wa_account_id = v;
       }
@@ -122,7 +132,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       return NextResponse.json({ error: "Nada que actualizar" }, { status: 400 });
     }
 
-    const all = await listTeamMembers();
+    const all = await listTeamMembers(orgId);
     const target = all.find((m) => m.id === id);
     if (!target) return NextResponse.json({ error: "Miembro no encontrado" }, { status: 404 });
 
@@ -136,7 +146,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       patch.active === false ||
       (patch.role !== undefined && patch.role !== "ADMIN") ||
       patch.username === null;
-    if (losesAccess && (await isLastAdminWithAccess(target))) {
+    if (losesAccess && (await isLastAdminWithAccess(target, orgId))) {
       return NextResponse.json(
         { error: "Debe quedar al menos un Admin activo con usuario y contraseña" },
         { status: 400 }
@@ -153,7 +163,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
 
     const member =
-      Object.keys(patch).length > 0 ? await updateTeamMember(id, patch) : target;
+      Object.keys(patch).length > 0 ? await updateTeamMember(id, patch, orgId) : target;
     if (!member) return NextResponse.json({ error: "Miembro no encontrado" }, { status: 404 });
     if (password) await setMemberPassword(id, password);
     return NextResponse.json({ ok: true, member });
@@ -173,6 +183,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
@@ -180,10 +191,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     if (id === auth.member.id) {
       return NextResponse.json({ error: "No puedes eliminar tu propia cuenta" }, { status: 400 });
     }
-    const all = await listTeamMembers();
+    const all = await listTeamMembers(orgId);
     const target = all.find((m) => m.id === id);
     if (!target) return NextResponse.json({ error: "Miembro no encontrado" }, { status: 404 });
-    if (await isLastAdminWithAccess(target)) {
+    if (await isLastAdminWithAccess(target, orgId)) {
       return NextResponse.json(
         { error: "Debe quedar al menos un Admin activo con usuario y contraseña" },
         { status: 400 }
@@ -192,7 +203,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 
     // Los leads asignados quedan sin asignar (FK on delete set null) y las
     // reglas de enrutamiento que lo referencien se ignoran en silencio.
-    await deleteTeamMember(id);
+    await deleteTeamMember(id, orgId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

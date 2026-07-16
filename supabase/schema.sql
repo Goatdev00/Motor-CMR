@@ -1123,7 +1123,6 @@ revoke execute on function set_member_password(bigint, text) from public, anon, 
 
 grant execute on function insert_message(bigint, text, text) to service_role;
 grant execute on function insert_human_message(bigint, text) to service_role;
-grant execute on function list_conversations() to service_role;
 grant execute on function delete_conversation(bigint) to service_role;
 grant execute on function set_stage(bigint, text, boolean) to service_role;
 grant execute on function schedule_follow_up(bigint, text, bigint) to service_role;
@@ -1135,3 +1134,302 @@ grant execute on function assign_lead(bigint, bigint, text) to service_role;
 grant execute on function route_lead_for_stage(bigint, text) to service_role;
 grant execute on function login_member(text, text) to service_role;
 grant execute on function set_member_password(bigint, text) to service_role;
+
+-- ============================================================
+-- MULTI-ORGANIZACIÓN (aditivo e idempotente)
+-- Cada organización (cliente de la agencia) es un espacio aislado:
+-- sus canales/tokens, sus chats, su CRM, su equipo, sus plantillas,
+-- sus agentes de IA, su calendario, sus alarmas y sus colas.
+-- Los datos existentes quedan en la organización 1 (la agencia).
+-- messages / lead_notes / lead_events heredan la organización a
+-- través de conversation_id (no llevan columna propia).
+-- ============================================================
+
+create table if not exists organizations (
+  id          bigint generated always as identity primary key,
+  name        text not null,
+  active      boolean not null default true,
+  created_at  bigint not null default extract(epoch from now())::bigint
+);
+
+alter table organizations enable row level security;
+
+-- La organización 1 es la agencia (dueña de la plataforma).
+insert into organizations (name)
+select 'Motor Advertising' where not exists (select 1 from organizations);
+
+-- org_id en todas las tablas con datos por cliente. default 1 = los datos
+-- existentes migran a la agencia sin tocarlos.
+alter table conversations   add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table team_members    add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table wa_accounts     add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table channel_settings add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table app_settings    add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table quick_replies   add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table alarms          add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table calendar_events add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table email_queue     add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table outbox          add column if not exists org_id bigint not null default 1 references organizations(id);
+alter table api_keys        add column if not exists org_id bigint not null default 1 references organizations(id);
+
+-- Claves primarias compuestas: cada organización tiene SU fila por canal y
+-- SU fila por preferencia.
+do $$ begin
+  if exists (
+    select 1 from pg_constraint
+    where conname = 'channel_settings_pkey' and array_length(conkey, 1) = 1
+  ) then
+    alter table channel_settings drop constraint channel_settings_pkey;
+    alter table channel_settings add constraint channel_settings_pkey primary key (org_id, channel);
+  end if;
+  if exists (
+    select 1 from pg_constraint
+    where conname = 'app_settings_pkey' and array_length(conkey, 1) = 1
+  ) then
+    alter table app_settings drop constraint app_settings_pkey;
+    alter table app_settings add constraint app_settings_pkey primary key (org_id, key);
+  end if;
+end $$;
+
+-- El contacto es único por organización y canal (dos clientes pueden tener
+-- al mismo lead sin chocar).
+drop index if exists idx_conversations_channel_ext;
+create unique index if not exists idx_conversations_org_channel_ext
+  on conversations (org_id, channel, external_id);
+
+create index if not exists idx_conversations_org on conversations (org_id);
+create index if not exists idx_outbox_org on outbox (org_id, sent);
+create index if not exists idx_email_queue_org on email_queue (org_id, sent);
+
+-- ── RPCs con propagación de organización ────────────────────
+
+-- insert_human_message: el outbox hereda la organización de la conversación.
+create or replace function insert_human_message(
+  p_conversation_id bigint,
+  p_content text
+) returns messages
+language plpgsql as $$
+declare
+  m messages;
+  v_recipient text;
+  v_channel text;
+  v_org bigint;
+begin
+  select coalesce(external_id, phone), channel, org_id
+  into v_recipient, v_channel, v_org
+  from conversations where id = p_conversation_id;
+  if v_recipient is null then
+    raise exception 'conversation % no existe', p_conversation_id;
+  end if;
+
+  insert into messages (conversation_id, role, content)
+  values (p_conversation_id, 'human', p_content)
+  returning * into m;
+
+  update conversations
+  set last_message_at = m.created_at
+  where id = p_conversation_id;
+
+  insert into outbox (conversation_id, phone, content, channel, org_id)
+  values (p_conversation_id, v_recipient, p_content, v_channel, v_org);
+
+  return m;
+end;
+$$;
+
+-- schedule_follow_up: ídem.
+create or replace function schedule_follow_up(
+  p_conversation_id bigint,
+  p_content text,
+  p_send_at bigint
+) returns void
+language plpgsql as $$
+declare
+  v_recipient text;
+  v_channel text;
+  v_org bigint;
+begin
+  select coalesce(external_id, phone), channel, org_id
+  into v_recipient, v_channel, v_org
+  from conversations where id = p_conversation_id;
+  if v_recipient is null then
+    raise exception 'conversation % no existe', p_conversation_id;
+  end if;
+
+  delete from outbox
+  where conversation_id = p_conversation_id and kind = 'followup' and sent = 0;
+
+  insert into outbox (conversation_id, phone, content, kind, scheduled_at, channel, org_id)
+  values (p_conversation_id, v_recipient, p_content, 'followup', p_send_at, v_channel, v_org);
+
+  update conversations
+  set next_follow_up_at = p_send_at, follow_up_note = p_content
+  where id = p_conversation_id;
+
+  insert into lead_events (conversation_id, type, detail)
+  values (p_conversation_id, 'followup_scheduled', p_content);
+end;
+$$;
+
+-- assign_lead: el miembro debe ser de la MISMA organización que el lead, y
+-- el aviso al vendedor hereda la organización.
+create or replace function assign_lead(
+  p_conversation_id bigint,
+  p_member_id bigint,
+  p_reason text
+) returns void
+language plpgsql as $$
+declare
+  v_current bigint;
+  v_lead_name text;
+  v_lead_phone text;
+  v_lead_ext text;
+  v_org bigint;
+  v_member_name text;
+  v_member_active boolean;
+  v_notify text;
+  v_acc_phone text;
+  v_target text;
+  v_display text;
+begin
+  select assigned_member_id, name, phone, external_id, org_id
+    into v_current, v_lead_name, v_lead_phone, v_lead_ext, v_org
+  from conversations where id = p_conversation_id;
+  if not found then
+    raise exception 'conversation % no existe', p_conversation_id;
+  end if;
+
+  if v_current is not distinct from p_member_id then return; end if;
+
+  if p_member_id is null then
+    update conversations set assigned_member_id = null where id = p_conversation_id;
+    insert into lead_events (conversation_id, type, detail)
+    values (p_conversation_id, 'assigned',
+            'Lead sin asignar (' || coalesce(nullif(p_reason, ''), 'manual') || ')');
+    return;
+  end if;
+
+  select m.name, m.active, m.notify_phone, a.phone
+    into v_member_name, v_member_active, v_notify, v_acc_phone
+  from team_members m
+  left join wa_accounts a on a.id = m.wa_account_id
+  where m.id = p_member_id and m.org_id = v_org;
+  if not found then
+    raise exception 'miembro % no existe en la organización %', p_member_id, v_org;
+  end if;
+
+  update conversations set assigned_member_id = p_member_id where id = p_conversation_id;
+  insert into lead_events (conversation_id, type, detail)
+  values (p_conversation_id, 'assigned',
+          'Asignado a ' || v_member_name ||
+          case when coalesce(p_reason, '') <> '' then ' — ' || p_reason else '' end);
+
+  v_target := coalesce(nullif(v_notify, ''), v_acc_phone);
+  v_display := coalesce(v_lead_name, v_lead_phone, v_lead_ext, '#' || p_conversation_id);
+  if v_member_active and v_target is not null
+     and v_target <> coalesce(v_lead_phone, v_lead_ext, '') then
+    insert into outbox (conversation_id, phone, content, channel, kind, org_id)
+    values (p_conversation_id, v_target,
+            'AGENTE · Se te asignó el lead ' || v_display ||
+            case when coalesce(p_reason, '') <> '' then ' (' || p_reason || ')' else '' end ||
+            '. Revisa el dashboard.',
+            'whatsapp', 'notify', v_org);
+  end if;
+end;
+$$;
+
+-- route_lead_for_stage: las reglas de enrutamiento y las etiquetas de etapa
+-- son de la organización del lead.
+create or replace function route_lead_for_stage(
+  p_conversation_id bigint,
+  p_stage text
+) returns void
+language plpgsql as $$
+declare
+  v_org bigint;
+  v_member bigint;
+  v_label text;
+begin
+  select org_id into v_org from conversations where id = p_conversation_id;
+  if v_org is null then return; end if;
+
+  select nullif(value ->> p_stage, '')::bigint into v_member
+  from app_settings where key = 'stage_routing' and org_id = v_org;
+  if v_member is null then return; end if;
+  if not exists (
+    select 1 from team_members where id = v_member and active and org_id = v_org
+  ) then return; end if;
+
+  select value -> p_stage ->> 'label' into v_label
+  from app_settings where key = 'stages' and org_id = v_org;
+
+  perform assign_lead(p_conversation_id, v_member,
+                      'entró a la etapa «' || coalesce(v_label, p_stage) || '»');
+end;
+$$;
+
+-- list_conversations ahora es POR organización.
+drop function if exists list_conversations();
+drop function if exists list_conversations(bigint);
+create or replace function list_conversations(p_org_id bigint)
+returns table (
+  id bigint,
+  phone text,
+  name text,
+  mode text,
+  last_message_at bigint,
+  created_at bigint,
+  last_message_preview text,
+  stage text,
+  lead_score integer,
+  deal_value numeric,
+  company text,
+  email text,
+  tags text[],
+  ai_summary text,
+  ai_next_step text,
+  ai_suggested_stage text,
+  next_follow_up_at bigint,
+  follow_up_note text,
+  last_user_message_at bigint,
+  last_message_role text,
+  channel text,
+  external_id text,
+  assigned_member_id bigint,
+  assigned_member_name text,
+  wa_account_id bigint,
+  org_id bigint
+)
+language sql stable as $$
+  select
+    c.id, c.phone, c.name, c.mode, c.last_message_at, c.created_at,
+    (
+      select m.content
+      from messages m
+      where m.conversation_id = c.id
+      order by m.created_at desc, m.id desc
+      limit 1
+    ) as last_message_preview,
+    c.stage, c.lead_score, c.deal_value, c.company, c.email, c.tags,
+    c.ai_summary, c.ai_next_step, c.ai_suggested_stage,
+    c.next_follow_up_at, c.follow_up_note, c.last_user_message_at,
+    (
+      select m.role
+      from messages m
+      where m.conversation_id = c.id
+      order by m.created_at desc, m.id desc
+      limit 1
+    ) as last_message_role,
+    c.channel, c.external_id,
+    c.assigned_member_id,
+    tm.name as assigned_member_name,
+    c.wa_account_id,
+    c.org_id
+  from conversations c
+  left join team_members tm on tm.id = c.assigned_member_id
+  where c.org_id = p_org_id
+  order by c.last_message_at desc nulls last, c.id desc;
+$$;
+
+revoke execute on function list_conversations(bigint) from public, anon, authenticated;
+grant execute on function list_conversations(bigint) to service_role;

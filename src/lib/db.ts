@@ -59,6 +59,21 @@ export interface Conversation {
   // Cuenta de WhatsApp por la que habla este lead (última que recibió su
   // mensaje). Null en canales de Meta o datos previos a la migración.
   wa_account_id: number | null;
+  // ── Multi-organización ──
+  // Organización (cliente de la agencia) dueña de este lead.
+  org_id: number;
+}
+
+// Organización = espacio aislado de un cliente de la agencia (canales,
+// chats, CRM, equipo, plantillas, agentes, colas). La organización 1 es la
+// agencia dueña de la plataforma.
+export const AGENCY_ORG_ID = 1;
+
+export interface Organization {
+  id: number;
+  name: string;
+  active: boolean;
+  created_at: number;
 }
 
 export interface LeadNote {
@@ -110,6 +125,7 @@ export interface WaAccount {
   restart_requested: boolean;
   created_at: number;
   updated_at: number;
+  org_id: number;
 }
 
 export type TeamRole = "ADMIN" | "SUPERVISOR" | "VENDEDOR";
@@ -126,11 +142,13 @@ export interface TeamMember {
   // NUNCA sale de esta capa: los selects son explícitos sin esa columna.
   username: string | null;
   created_at: number;
+  // Organización a la que pertenece (y cuyo espacio ve al entrar).
+  org_id: number;
 }
 
 // Columnas públicas de team_members (todas menos password_hash).
 const TEAM_MEMBER_COLUMNS =
-  "id, name, role, wa_account_id, notify_phone, active, username, created_at";
+  "id, name, role, wa_account_id, notify_phone, active, username, created_at, org_id";
 
 export interface OutboxItem {
   id: number;
@@ -150,6 +168,8 @@ export interface OutboxItem {
   // Cuenta de WhatsApp explícita para este envío (null = resolver al enviar).
   wa_account_id: number | null;
   created_at: number;
+  // Organización del envío: decide con QUÉ tokens/cuentas sale.
+  org_id: number;
 }
 
 // Singleton perezoso: no crea el cliente en tiempo de import (permite que
@@ -189,6 +209,7 @@ function fail(context: string, message: string): never {
 // ── Conversaciones ──────────────────────────────────────────
 
 export async function getOrCreateConversation(
+  orgId: number,
   channel: Channel,
   externalId: string,
   opts?: { name?: string | null; phone?: string | null }
@@ -198,6 +219,7 @@ export async function getOrCreateConversation(
   const { data: existing, error: selError } = await sb
     .from("conversations")
     .select("*")
+    .eq("org_id", orgId)
     .eq("channel", channel)
     .eq("external_id", externalId)
     .maybeSingle();
@@ -220,6 +242,7 @@ export async function getOrCreateConversation(
   const { data: created, error: insError } = await sb
     .from("conversations")
     .insert({
+      org_id: orgId,
       channel,
       external_id: externalId,
       phone: opts?.phone ?? null,
@@ -235,6 +258,7 @@ export async function getOrCreateConversation(
       const { data: retry, error: retryError } = await sb
         .from("conversations")
         .select("*")
+        .eq("org_id", orgId)
         .eq("channel", channel)
         .eq("external_id", externalId)
         .single();
@@ -246,22 +270,49 @@ export async function getOrCreateConversation(
   return created as Conversation;
 }
 
-export async function getConversationById(id: number): Promise<Conversation | null> {
+// orgId (opcional): si se pasa, la conversación debe pertenecer a esa
+// organización — las rutas del dashboard SIEMPRE deben pasarlo para que un
+// usuario no alcance leads de otro cliente por id.
+export async function getConversationById(
+  id: number,
+  orgId?: number
+): Promise<Conversation | null> {
   const sb = getSupabase();
-  const { data, error } = await sb
-    .from("conversations")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle();
+  let query = sb.from("conversations").select("*").eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { data, error } = await query.maybeSingle();
   if (error) fail("select conversation by id", error.message);
   return (data as Conversation | null) ?? null;
 }
 
-export async function listConversations(): Promise<ConversationWithPreview[]> {
+export async function listConversations(orgId: number): Promise<ConversationWithPreview[]> {
   const sb = getSupabase();
-  const { data, error } = await sb.rpc("list_conversations");
+  const { data, error } = await sb.rpc("list_conversations", { p_org_id: orgId });
   if (error) fail("list_conversations", error.message);
   return (data ?? []) as ConversationWithPreview[];
+}
+
+// ── Organizaciones (multi-cliente) ──────────────────────────
+
+export async function listOrganizations(): Promise<Organization[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("organizations")
+    .select("*")
+    .order("id", { ascending: true });
+  if (error) fail("list organizations", error.message);
+  return (data ?? []) as Organization[];
+}
+
+export async function createOrganization(name: string): Promise<Organization> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("organizations")
+    .insert({ name })
+    .select()
+    .single();
+  if (error) fail("create organization", error.message);
+  return data as Organization;
 }
 
 export async function setMode(conversationId: number, mode: ConversationMode): Promise<void> {
@@ -319,21 +370,22 @@ export async function getRecentHistory(conversationId: number, limit = 20): Prom
 
 // ── Cuentas de WhatsApp (buzón bot ↔ dashboard) ─────────────
 
-export async function listWaAccounts(): Promise<WaAccount[]> {
+// orgId: filtra por organización (dashboard). Sin orgId devuelve TODAS —
+// solo el proceso bot, que atiende las cuentas de todos los clientes.
+export async function listWaAccounts(orgId?: number): Promise<WaAccount[]> {
   const sb = getSupabase();
-  const { data, error } = await sb
-    .from("wa_accounts")
-    .select("*")
-    .order("id", { ascending: true });
+  let query = sb.from("wa_accounts").select("*");
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { data, error } = await query.order("id", { ascending: true });
   if (error) fail("list wa_accounts", error.message);
   return (data ?? []) as WaAccount[];
 }
 
-export async function createWaAccount(label: string): Promise<WaAccount> {
+export async function createWaAccount(orgId: number, label: string): Promise<WaAccount> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("wa_accounts")
-    .insert({ label })
+    .insert({ label, org_id: orgId })
     .select()
     .single();
   if (error) fail("create wa_account", error.message);
@@ -352,7 +404,9 @@ export async function updateWaAccount(
     qr_string?: string | null;
     phone?: string | null;
     restart_requested?: boolean;
-  }
+  },
+  // Las rutas del dashboard lo pasan (aislamiento); el bot opera por id.
+  orgId?: number
 ): Promise<void> {
   const sb = getSupabase();
   const update: Record<string, unknown> = { updated_at: epoch() };
@@ -362,24 +416,29 @@ export async function updateWaAccount(
   if (patch.qr_string !== undefined) update.qr_string = patch.qr_string;
   if (patch.phone !== undefined) update.phone = patch.phone;
   if (patch.restart_requested !== undefined) update.restart_requested = patch.restart_requested;
-  const { error } = await sb.from("wa_accounts").update(update).eq("id", id);
+  let query = sb.from("wa_accounts").update(update).eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { error } = await query;
   if (error) fail("update wa_account", error.message);
 }
 
-export async function deleteWaAccount(id: number): Promise<void> {
+export async function deleteWaAccount(id: number, orgId?: number): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from("wa_accounts").delete().eq("id", id);
+  let query = sb.from("wa_accounts").delete().eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { error } = await query;
   if (error) fail("delete wa_account", error.message);
 }
 
 // ── Miembros del equipo ─────────────────────────────────────
 
-export async function listTeamMembers(): Promise<TeamMember[]> {
+// orgId: filtra por organización (dashboard). Sin orgId devuelve TODOS —
+// solo el proceso bot (teléfonos internos y resolución de cuentas).
+export async function listTeamMembers(orgId?: number): Promise<TeamMember[]> {
   const sb = getSupabase();
-  const { data, error } = await sb
-    .from("team_members")
-    .select(TEAM_MEMBER_COLUMNS)
-    .order("id", { ascending: true });
+  let query = sb.from("team_members").select(TEAM_MEMBER_COLUMNS);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { data, error } = await query.order("id", { ascending: true });
   if (error) fail("list team_members", error.message);
   return (data ?? []) as unknown as TeamMember[];
 }
@@ -395,17 +454,21 @@ export async function getTeamMemberById(id: number): Promise<TeamMember | null> 
   return (data as unknown as TeamMember | null) ?? null;
 }
 
-export async function createTeamMember(input: {
-  name: string;
-  role: TeamRole;
-  wa_account_id?: number | null;
-  notify_phone?: string | null;
-  username?: string | null;
-}): Promise<TeamMember> {
+export async function createTeamMember(
+  orgId: number,
+  input: {
+    name: string;
+    role: TeamRole;
+    wa_account_id?: number | null;
+    notify_phone?: string | null;
+    username?: string | null;
+  }
+): Promise<TeamMember> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("team_members")
     .insert({
+      org_id: orgId,
       name: input.name,
       role: input.role,
       wa_account_id: input.wa_account_id ?? null,
@@ -427,7 +490,8 @@ export async function updateTeamMember(
     notify_phone?: string | null;
     active?: boolean;
     username?: string | null;
-  }
+  },
+  orgId?: number
 ): Promise<TeamMember | null> {
   const sb = getSupabase();
   const update: Record<string, unknown> = {};
@@ -437,12 +501,9 @@ export async function updateTeamMember(
   if (patch.notify_phone !== undefined) update.notify_phone = patch.notify_phone;
   if (patch.active !== undefined) update.active = patch.active;
   if (patch.username !== undefined) update.username = patch.username;
-  const { data, error } = await sb
-    .from("team_members")
-    .update(update)
-    .eq("id", id)
-    .select(TEAM_MEMBER_COLUMNS)
-    .maybeSingle();
+  let query = sb.from("team_members").update(update).eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { data, error } = await query.select(TEAM_MEMBER_COLUMNS).maybeSingle();
   if (error) fail("update team_member", error.message);
   return (data as unknown as TeamMember | null) ?? null;
 }
@@ -469,11 +530,12 @@ export async function loginMember(
 // Ids de los Admins que realmente pueden entrar (activos, con usuario Y
 // contraseña). Un admin con usuario pero sin contraseña no puede loguearse:
 // contarlo como "con acceso" permitía quedarse sin nadie que pudiera entrar.
-export async function listAdminAccessIds(): Promise<number[]> {
+export async function listAdminAccessIds(orgId: number): Promise<number[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("team_members")
     .select("id")
+    .eq("org_id", orgId)
     .eq("active", true)
     .eq("role", "ADMIN")
     .not("username", "is", null)
@@ -491,9 +553,11 @@ export async function setMemberPassword(id: number, password: string): Promise<v
   if (error) fail("set_member_password", error.message);
 }
 
-export async function deleteTeamMember(id: number): Promise<void> {
+export async function deleteTeamMember(id: number, orgId?: number): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from("team_members").delete().eq("id", id);
+  let query = sb.from("team_members").delete().eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { error } = await query;
   if (error) fail("delete team_member", error.message);
 }
 
@@ -839,6 +903,8 @@ export async function assertCrmMigration(): Promise<void> {
   const { error: accountsError } = await sb.from("wa_accounts").select("id").limit(1);
   const { error: loginError } = await sb.from("team_members").select("username").limit(1);
   const { error: alarmsError } = await sb.from("alarms").select("id").limit(1);
+  const { error: orgsError } = await sb.from("organizations").select("id").limit(1);
+  const { error: orgColError } = await sb.from("conversations").select("org_id").limit(1);
   const firstError =
     error ??
     convError ??
@@ -848,7 +914,9 @@ export async function assertCrmMigration(): Promise<void> {
     teamError ??
     accountsError ??
     loginError ??
-    alarmsError;
+    alarmsError ??
+    orgsError ??
+    orgColError;
   if (firstError) {
     throw new Error(
       "La base no tiene las migraciones CRM/multicanal al día. " +
@@ -868,29 +936,51 @@ export interface ChannelSettingsRow {
   enabled: boolean;
   config: Record<string, string>;
   updated_at: number;
+  org_id: number;
 }
 
-export async function getAllChannelSettings(): Promise<Record<string, ChannelSettingsRow>> {
+// Configuración de canales DE UNA organización (tokens propios del cliente).
+export async function getAllChannelSettings(
+  orgId: number
+): Promise<Record<string, ChannelSettingsRow>> {
   const sb = getSupabase();
-  const { data, error } = await sb.from("channel_settings").select("*");
+  const { data, error } = await sb
+    .from("channel_settings")
+    .select("*")
+    .eq("org_id", orgId);
   if (error) fail("get channel_settings", error.message);
   const map: Record<string, ChannelSettingsRow> = {};
   for (const row of (data ?? []) as ChannelSettingsRow[]) map[row.channel] = row;
   return map;
 }
 
+// TODAS las filas de todas las organizaciones: la usan el bot (toggles por
+// organización) y el webhook de Meta (enrutar cada evento a su organización
+// por page_id / IG user id / phone_number_id).
+export async function listAllChannelSettings(): Promise<ChannelSettingsRow[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb.from("channel_settings").select("*");
+  if (error) fail("list channel_settings", error.message);
+  return (data ?? []) as ChannelSettingsRow[];
+}
+
 export async function upsertChannelSettings(
+  orgId: number,
   channel: string,
   enabled: boolean,
   config: Record<string, string>
 ): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from("channel_settings").upsert({
-    channel,
-    enabled,
-    config,
-    updated_at: epoch(),
-  });
+  const { error } = await sb.from("channel_settings").upsert(
+    {
+      org_id: orgId,
+      channel,
+      enabled,
+      config,
+      updated_at: epoch(),
+    },
+    { onConflict: "org_id,channel" }
+  );
   if (error) fail("upsert channel_settings", error.message);
 }
 
@@ -913,6 +1003,9 @@ export interface EmailQueueItem {
   // Reply-To opcional (sección Leads). undefined si la columna aún no existe
   // en la DB (schema.sql sin re-ejecutar): el envío sale sin la cabecera.
   reply_to?: string | null;
+  // Organización del envío: decide con QUÉ cuenta SMTP sale y a qué límites
+  // por hora/día se descuenta.
+  org_id: number;
 }
 
 export interface EmailDraft {
@@ -922,6 +1015,7 @@ export interface EmailDraft {
   html: string;
   batch_id?: string | null;
   reply_to?: string | null;
+  org_id: number;
 }
 
 export async function enqueueEmails(drafts: EmailDraft[]): Promise<number> {
@@ -999,11 +1093,13 @@ export async function resetInFlightEmails(): Promise<void> {
 }
 
 // Enviados desde un instante (para los límites por hora/día opcionales).
-export async function countEmailsSentSince(since: number): Promise<number> {
+// Por organización: los límites son de la cuenta SMTP de cada cliente.
+export async function countEmailsSentSince(since: number, orgId: number): Promise<number> {
   const sb = getSupabase();
   const { count, error } = await sb
     .from("email_queue")
     .select("id", { count: "exact", head: true })
+    .eq("org_id", orgId)
     .eq("sent", 1)
     .gte("sent_at", since);
   if (error) fail("count emails sent", error.message);
@@ -1016,16 +1112,25 @@ export interface EmailStats {
   failed: number;
 }
 
-export async function getEmailStats(): Promise<EmailStats> {
+export async function getEmailStats(orgId: number): Promise<EmailStats> {
   const sb = getSupabase();
   const [pending, sentDay, failed] = await Promise.all([
-    sb.from("email_queue").select("id", { count: "exact", head: true }).eq("sent", 0),
     sb
       .from("email_queue")
       .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("sent", 0),
+    sb
+      .from("email_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
       .eq("sent", 1)
       .gte("sent_at", epoch() - 86400),
-    sb.from("email_queue").select("id", { count: "exact", head: true }).eq("sent", 2),
+    sb
+      .from("email_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("sent", 2),
   ]);
   const firstError = pending.error ?? sentDay.error ?? failed.error;
   if (firstError) fail("email stats", firstError.message);
@@ -1036,11 +1141,12 @@ export async function getEmailStats(): Promise<EmailStats> {
   };
 }
 
-export async function listRecentEmails(limit = 20): Promise<EmailQueueItem[]> {
+export async function listRecentEmails(orgId: number, limit = 20): Promise<EmailQueueItem[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("email_queue")
     .select("*")
+    .eq("org_id", orgId)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(limit);
@@ -1070,6 +1176,8 @@ export interface Alarm {
   last_fired_at: number | null;
   last_error: string | null;
   created_at: number;
+  // Organización dueña: sus avisos salen por SUS canales (WhatsApp/SMTP).
+  org_id: number;
 }
 
 export interface AlarmDraft {
@@ -1084,11 +1192,12 @@ export interface AlarmDraft {
   repeat_every: AlarmRepeat;
 }
 
-export async function listAlarms(): Promise<Alarm[]> {
+export async function listAlarms(orgId: number): Promise<Alarm[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("alarms")
     .select("*")
+    .eq("org_id", orgId)
     .order("active", { ascending: false })
     .order("next_fire_at", { ascending: true })
     .limit(200);
@@ -1096,11 +1205,12 @@ export async function listAlarms(): Promise<Alarm[]> {
   return (data ?? []) as Alarm[];
 }
 
-export async function createAlarm(draft: AlarmDraft): Promise<Alarm> {
+export async function createAlarm(orgId: number, draft: AlarmDraft): Promise<Alarm> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("alarms")
     .insert({
+      org_id: orgId,
       title: draft.title,
       message: draft.message,
       kind: draft.kind,
@@ -1119,7 +1229,8 @@ export async function createAlarm(draft: AlarmDraft): Promise<Alarm> {
 
 export async function updateAlarm(
   id: number,
-  patch: Partial<AlarmDraft> & { active?: boolean }
+  patch: Partial<AlarmDraft> & { active?: boolean },
+  orgId?: number
 ): Promise<Alarm | null> {
   const sb = getSupabase();
   const update: Record<string, unknown> = {};
@@ -1139,26 +1250,27 @@ export async function updateAlarm(
   }
   // Reprogramar o reactivar limpia el último error (arranque limpio).
   if (patch.next_fire_at !== undefined || patch.active === true) update.last_error = null;
-  const { data, error } = await sb
-    .from("alarms")
-    .update(update)
-    .eq("id", id)
-    .select()
-    .maybeSingle();
+  let query = sb.from("alarms").update(update).eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { data, error } = await query.select().maybeSingle();
   if (error) fail("update alarm", error.message);
   return (data as Alarm | null) ?? null;
 }
 
-export async function getAlarmById(id: number): Promise<Alarm | null> {
+export async function getAlarmById(id: number, orgId?: number): Promise<Alarm | null> {
   const sb = getSupabase();
-  const { data, error } = await sb.from("alarms").select("*").eq("id", id).maybeSingle();
+  let query = sb.from("alarms").select("*").eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { data, error } = await query.maybeSingle();
   if (error) fail("get alarm", error.message);
   return (data as Alarm | null) ?? null;
 }
 
-export async function deleteAlarm(id: number): Promise<void> {
+export async function deleteAlarm(id: number, orgId?: number): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from("alarms").delete().eq("id", id);
+  let query = sb.from("alarms").delete().eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { error } = await query;
   if (error) fail("delete alarm", error.message);
 }
 
@@ -1209,7 +1321,8 @@ export async function setAlarmError(id: number, message: string): Promise<void> 
 }
 
 // Aviso interno por WhatsApp (outbox kind='notify', sin conversación).
-export async function enqueueNotify(phone: string, content: string): Promise<void> {
+// orgId decide por QUÉ cuentas de WhatsApp sale el aviso.
+export async function enqueueNotify(orgId: number, phone: string, content: string): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb.from("outbox").insert({
     conversation_id: null,
@@ -1217,6 +1330,7 @@ export async function enqueueNotify(phone: string, content: string): Promise<voi
     content,
     channel: "whatsapp",
     kind: "notify",
+    org_id: orgId,
   });
   if (error) fail("enqueue notify", error.message);
 }
@@ -1227,6 +1341,7 @@ export async function enqueueNotify(phone: string, content: string): Promise<voi
 // Devuelve null si no había fila que ascender o si ya existe una
 // conversación de WhatsApp con ese teléfono (unique 23505).
 export async function upgradeApiLeadToWhatsapp(
+  orgId: number,
   email: string,
   phone: string
 ): Promise<Conversation | null> {
@@ -1234,6 +1349,7 @@ export async function upgradeApiLeadToWhatsapp(
   const { data, error } = await sb
     .from("conversations")
     .update({ channel: "whatsapp", external_id: phone, phone })
+    .eq("org_id", orgId)
     .eq("channel", "api")
     .eq("external_id", email)
     .select()
@@ -1254,22 +1370,26 @@ export interface ApiKeyRow {
   active: boolean;
   last_used_at: number | null;
   created_at: number;
+  // Los leads creados con esta clave nacen en esta organización.
+  org_id: number;
 }
 
 // El hash jamás sale de esta capa (selects explícitos).
-const API_KEY_COLUMNS = "id, label, key_prefix, active, last_used_at, created_at";
+const API_KEY_COLUMNS = "id, label, key_prefix, active, last_used_at, created_at, org_id";
 
-export async function listApiKeys(): Promise<ApiKeyRow[]> {
+export async function listApiKeys(orgId: number): Promise<ApiKeyRow[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("api_keys")
     .select(API_KEY_COLUMNS)
+    .eq("org_id", orgId)
     .order("id", { ascending: true });
   if (error) fail("list api_keys", error.message);
   return (data ?? []) as unknown as ApiKeyRow[];
 }
 
 export async function createApiKey(
+  orgId: number,
   label: string,
   keyHash: string,
   keyPrefix: string
@@ -1277,16 +1397,18 @@ export async function createApiKey(
   const sb = getSupabase();
   const { data, error } = await sb
     .from("api_keys")
-    .insert({ label, key_hash: keyHash, key_prefix: keyPrefix })
+    .insert({ org_id: orgId, label, key_hash: keyHash, key_prefix: keyPrefix })
     .select(API_KEY_COLUMNS)
     .single();
   if (error) fail("create api_key", error.message);
   return data as unknown as ApiKeyRow;
 }
 
-export async function deleteApiKey(id: number): Promise<void> {
+export async function deleteApiKey(id: number, orgId?: number): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from("api_keys").delete().eq("id", id);
+  let query = sb.from("api_keys").delete().eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { error } = await query;
   if (error) fail("delete api_key", error.message);
 }
 
@@ -1310,22 +1432,25 @@ export async function touchApiKey(id: number): Promise<void> {
 
 // ── Preferencias de la app (app_settings) ───────────────────
 
-export async function getAppSetting<T>(key: string): Promise<T | null> {
+// Preferencias POR organización (etapas, enrutamiento, plantillas de
+// palabras clave, agentes de IA, credenciales de Google, responder-a...).
+export async function getAppSetting<T>(orgId: number, key: string): Promise<T | null> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("app_settings")
     .select("value")
+    .eq("org_id", orgId)
     .eq("key", key)
     .maybeSingle();
   if (error) fail("get app_settings", error.message);
   return (data?.value as T) ?? null;
 }
 
-export async function setAppSetting(key: string, value: unknown): Promise<void> {
+export async function setAppSetting(orgId: number, key: string, value: unknown): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb
     .from("app_settings")
-    .upsert({ key, value, updated_at: epoch() });
+    .upsert({ org_id: orgId, key, value, updated_at: epoch() }, { onConflict: "org_id,key" });
   if (error) fail("set app_settings", error.message);
 }
 
@@ -1367,11 +1492,16 @@ export interface CalendarEventDraft {
 
 // Eventos que se solapan con [from, to): empiezan antes del fin del rango y
 // terminan (o empiezan, si no tienen fin) dentro o después del inicio.
-export async function listCalendarEvents(from: number, to: number): Promise<CalendarEvent[]> {
+export async function listCalendarEvents(
+  orgId: number,
+  from: number,
+  to: number
+): Promise<CalendarEvent[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("calendar_events")
     .select("*")
+    .eq("org_id", orgId)
     .lt("starts_at", to)
     .or(`ends_at.gte.${from},and(ends_at.is.null,starts_at.gte.${from})`)
     .order("starts_at", { ascending: true })
@@ -1381,11 +1511,15 @@ export async function listCalendarEvents(from: number, to: number): Promise<Cale
   return (data ?? []) as CalendarEvent[];
 }
 
-export async function createCalendarEvent(draft: CalendarEventDraft): Promise<CalendarEvent> {
+export async function createCalendarEvent(
+  orgId: number,
+  draft: CalendarEventDraft
+): Promise<CalendarEvent> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("calendar_events")
     .insert({
+      org_id: orgId,
       title: draft.title,
       description: draft.description ?? "",
       location: draft.location ?? "",
@@ -1405,7 +1539,8 @@ export async function createCalendarEvent(draft: CalendarEventDraft): Promise<Ca
 // Devuelve null si el evento ya no existe (la ruta responde 404).
 export async function updateCalendarEvent(
   id: number,
-  patch: Partial<CalendarEventDraft>
+  patch: Partial<CalendarEventDraft>,
+  orgId?: number
 ): Promise<CalendarEvent | null> {
   const sb = getSupabase();
   const update: Record<string, unknown> = { updated_at: epoch() };
@@ -1418,19 +1553,18 @@ export async function updateCalendarEvent(
   if (patch.color !== undefined) update.color = patch.color;
   if (patch.conversation_id !== undefined) update.conversation_id = patch.conversation_id;
   if (patch.attachments !== undefined) update.attachments = patch.attachments;
-  const { data, error } = await sb
-    .from("calendar_events")
-    .update(update)
-    .eq("id", id)
-    .select()
-    .maybeSingle();
+  let query = sb.from("calendar_events").update(update).eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { data, error } = await query.select().maybeSingle();
   if (error) fail("update calendar event", error.message);
   return (data as CalendarEvent | null) ?? null;
 }
 
-export async function deleteCalendarEvent(id: number): Promise<void> {
+export async function deleteCalendarEvent(id: number, orgId?: number): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from("calendar_events").delete().eq("id", id);
+  let query = sb.from("calendar_events").delete().eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { error } = await query;
   if (error) fail("delete calendar event", error.message);
 }
 
@@ -1447,11 +1581,16 @@ export interface FollowUpEntry {
   follow_up_note: string | null;
 }
 
-export async function listFollowUpsBetween(from: number, to: number): Promise<FollowUpEntry[]> {
+export async function listFollowUpsBetween(
+  orgId: number,
+  from: number,
+  to: number
+): Promise<FollowUpEntry[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("conversations")
     .select("id, name, phone, external_id, channel, next_follow_up_at, follow_up_note")
+    .eq("org_id", orgId)
     .gte("next_follow_up_at", from)
     .lt("next_follow_up_at", to)
     .order("next_follow_up_at", { ascending: true })
@@ -1462,29 +1601,36 @@ export async function listFollowUpsBetween(from: number, to: number): Promise<Fo
 
 // ── CRM: plantillas de respuesta rápida ─────────────────────
 
-export async function listQuickReplies(): Promise<QuickReply[]> {
+export async function listQuickReplies(orgId: number): Promise<QuickReply[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("quick_replies")
     .select("*")
+    .eq("org_id", orgId)
     .order("title", { ascending: true });
   if (error) fail("list quick replies", error.message);
   return (data ?? []) as QuickReply[];
 }
 
-export async function createQuickReply(title: string, content: string): Promise<QuickReply> {
+export async function createQuickReply(
+  orgId: number,
+  title: string,
+  content: string
+): Promise<QuickReply> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("quick_replies")
-    .insert({ title, content })
+    .insert({ org_id: orgId, title, content })
     .select()
     .single();
   if (error) fail("create quick reply", error.message);
   return data as QuickReply;
 }
 
-export async function deleteQuickReply(id: number): Promise<void> {
+export async function deleteQuickReply(id: number, orgId?: number): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from("quick_replies").delete().eq("id", id);
+  let query = sb.from("quick_replies").delete().eq("id", id);
+  if (orgId !== undefined) query = query.eq("org_id", orgId);
+  const { error } = await query;
   if (error) fail("delete quick reply", error.message);
 }

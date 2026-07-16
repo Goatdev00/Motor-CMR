@@ -29,19 +29,23 @@ export const GOOGLE_SCOPES = [
 // Carpeta de Drive donde se guardan los respaldos del calendario.
 const DRIVE_FOLDER_NAME = "AGENTE";
 
-export async function getGoogleSettings(): Promise<GoogleSettings> {
-  return (await getAppSetting<GoogleSettings>("google")) ?? {};
+// Todo es POR ORGANIZACIÓN: cada cliente conecta su propia cuenta de Google.
+export async function getGoogleSettings(orgId: number): Promise<GoogleSettings> {
+  return (await getAppSetting<GoogleSettings>(orgId, "google")) ?? {};
 }
 
-export async function saveGoogleSettings(patch: Partial<GoogleSettings>): Promise<void> {
-  const current = await getGoogleSettings();
+export async function saveGoogleSettings(
+  orgId: number,
+  patch: Partial<GoogleSettings>
+): Promise<void> {
+  const current = await getGoogleSettings(orgId);
   const merged: Record<string, string> = {};
   for (const [key, value] of Object.entries({ ...current, ...patch })) {
     // null/'' borran la clave (así "desconectar" elimina el refresh_token).
     if (typeof value === "string" && value !== "") merged[key] = value;
   }
-  await setAppSetting("google", merged);
-  clearGoogleTokenCache();
+  await setAppSetting(orgId, "google", merged);
+  clearGoogleTokenCache(orgId);
 }
 
 export function isGoogleConfigured(s: GoogleSettings): boolean {
@@ -112,17 +116,19 @@ export async function exchangeGoogleCode(
   };
 }
 
-// Cache del access_token (dura ~1h; margen de 60s). Si el proceso se
-// reinicia solo se pide otro con el refresh_token.
-let tokenCache: { token: string; expiresAt: number } | null = null;
+// Cache del access_token POR ORGANIZACIÓN (dura ~1h; margen de 60s). Si el
+// proceso se reinicia solo se pide otro con el refresh_token.
+const tokenCache = new Map<number, { token: string; expiresAt: number }>();
 
-export function clearGoogleTokenCache(): void {
-  tokenCache = null;
+export function clearGoogleTokenCache(orgId?: number): void {
+  if (orgId === undefined) tokenCache.clear();
+  else tokenCache.delete(orgId);
 }
 
-export async function getGoogleAccessToken(): Promise<string> {
-  if (tokenCache && tokenCache.expiresAt > Date.now()) return tokenCache.token;
-  const settings = await getGoogleSettings();
+export async function getGoogleAccessToken(orgId: number): Promise<string> {
+  const hit = tokenCache.get(orgId);
+  if (hit && hit.expiresAt > Date.now()) return hit.token;
+  const settings = await getGoogleSettings(orgId);
   if (!isGoogleConnected(settings)) {
     throw new Error(
       "No hay una cuenta de Google conectada. Conéctala desde la pestaña Calendario."
@@ -134,11 +140,12 @@ export async function getGoogleAccessToken(): Promise<string> {
     refresh_token: settings.refresh_token as string,
     grant_type: "refresh_token",
   });
-  tokenCache = {
+  const entry = {
     token: data.access_token as string,
     expiresAt: Date.now() + Math.max(0, (data.expires_in ?? 3600) - 60) * 1000,
   };
-  return tokenCache.token;
+  tokenCache.set(orgId, entry);
+  return entry.token;
 }
 
 // Revocación best-effort del grant en Google al desconectar: sin esto el
@@ -168,9 +175,9 @@ export async function fetchGoogleEmail(accessToken: string): Promise<string | nu
 
 // ── Drive ───────────────────────────────────────────────────
 
-async function driveFetch(path: string, init?: RequestInit): Promise<Response> {
+async function driveFetch(orgId: number, path: string, init?: RequestInit): Promise<Response> {
   const doFetch = async () => {
-    const token = await getGoogleAccessToken();
+    const token = await getGoogleAccessToken(orgId);
     const headers = new Headers(init?.headers);
     headers.set("Authorization", `Bearer ${token}`);
     return fetch(`https://www.googleapis.com${path}`, { ...init, headers });
@@ -180,7 +187,7 @@ async function driveFetch(path: string, init?: RequestInit): Promise<Response> {
   // expires_in (evento de seguridad, sesión revocada). Sin esto, Drive
   // quedaba roto hasta ~1h aunque un refresh lo arreglara al instante.
   if (res.status === 401) {
-    clearGoogleTokenCache();
+    clearGoogleTokenCache(orgId);
     res = await doFetch();
   }
   return res;
@@ -198,7 +205,7 @@ function escapeDriveQuery(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-export async function searchDriveFiles(query: string): Promise<DriveFile[]> {
+export async function searchDriveFiles(orgId: number, query: string): Promise<DriveFile[]> {
   const q = `name contains '${escapeDriveQuery(query)}' and trashed = false`;
   const params = new URLSearchParams({
     q,
@@ -209,7 +216,7 @@ export async function searchDriveFiles(query: string): Promise<DriveFile[]> {
     includeItemsFromAllDrives: "true",
     supportsAllDrives: "true",
   });
-  const res = await driveFetch(`/drive/v3/files?${params.toString()}`);
+  const res = await driveFetch(orgId, `/drive/v3/files?${params.toString()}`);
   if (!res.ok) await driveError(res, "buscar");
   const data = (await res.json()) as { files?: DriveFile[] };
   return data.files ?? [];
@@ -220,18 +227,18 @@ export async function searchDriveFiles(query: string): Promise<DriveFile[]> {
 // una carpeta 'AGENTE' compartida por un tercero ganaba la búsqueda y el
 // respaldo (con datos de leads) terminaba en el Drive de otra persona o la
 // exportación fallaba con 403 para siempre.
-export async function ensureDriveFolder(): Promise<string> {
+export async function ensureDriveFolder(orgId: number): Promise<string> {
   const q =
     `name = '${escapeDriveQuery(DRIVE_FOLDER_NAME)}' and ` +
     "mimeType = 'application/vnd.google-apps.folder' and trashed = false and " +
     "'root' in parents and 'me' in owners";
   const params = new URLSearchParams({ q, pageSize: "1", fields: "files(id)" });
-  const search = await driveFetch(`/drive/v3/files?${params.toString()}`);
+  const search = await driveFetch(orgId, `/drive/v3/files?${params.toString()}`);
   if (!search.ok) await driveError(search, "buscar carpeta");
   const found = (await search.json()) as { files?: { id: string }[] };
   if (found.files?.[0]?.id) return found.files[0].id;
 
-  const create = await driveFetch("/drive/v3/files?fields=id", {
+  const create = await driveFetch(orgId, "/drive/v3/files?fields=id", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -253,6 +260,7 @@ export interface DriveUploadResult {
 // Sube (o actualiza, si ya existe uno con el mismo nombre en la carpeta) un
 // archivo de texto. Así los respaldos no se duplican en cada exportación.
 export async function uploadTextFileToDrive(
+  orgId: number,
   name: string,
   mimeType: string,
   content: string,
@@ -262,13 +270,14 @@ export async function uploadTextFileToDrive(
     `name = '${escapeDriveQuery(name)}' and '${escapeDriveQuery(folderId)}' in parents ` +
     "and trashed = false";
   const params = new URLSearchParams({ q, pageSize: "1", fields: "files(id)" });
-  const search = await driveFetch(`/drive/v3/files?${params.toString()}`);
+  const search = await driveFetch(orgId, `/drive/v3/files?${params.toString()}`);
   if (!search.ok) await driveError(search, "buscar archivo");
   const found = (await search.json()) as { files?: { id: string }[] };
   const existingId = found.files?.[0]?.id ?? null;
 
   if (existingId) {
     const update = await driveFetch(
+      orgId,
       `/upload/drive/v3/files/${existingId}?uploadType=media&fields=id,webViewLink`,
       { method: "PATCH", headers: { "Content-Type": mimeType }, body: content }
     );
@@ -288,6 +297,7 @@ export async function uploadTextFileToDrive(
     content +
     `\r\n--${boundary}--`;
   const create = await driveFetch(
+    orgId,
     "/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink",
     {
       method: "POST",

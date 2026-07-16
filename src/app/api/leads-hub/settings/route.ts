@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAppSetting, setAppSetting } from "@/lib/db";
 import { EMAIL_REGEX } from "@/lib/mailer";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +12,13 @@ export const dynamic = "force-dynamic";
 const REPLY_TO_SETTING = "leads_reply_to";
 const REPLY_TO_FALLBACK = "motoradvertisingservice@gmail.com";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const saved = await getAppSetting<string>(REPLY_TO_SETTING);
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
+    const saved = await getAppSetting<string>(orgId, REPLY_TO_SETTING);
     return NextResponse.json({
       replyTo: typeof saved === "string" && saved ? saved : REPLY_TO_FALLBACK,
     });
@@ -27,12 +32,16 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const body = (await req.json().catch(() => null)) as { replyTo?: string } | null;
     const replyTo = body?.replyTo?.trim().toLowerCase() ?? "";
     if (!EMAIL_REGEX.test(replyTo)) {
       return NextResponse.json({ error: "Correo inválido" }, { status: 400 });
     }
-    await setAppSetting(REPLY_TO_SETTING, replyTo);
+    await setAppSetting(orgId, REPLY_TO_SETTING, replyTo);
     return NextResponse.json({ ok: true, replyTo });
   } catch (err) {
     return NextResponse.json(

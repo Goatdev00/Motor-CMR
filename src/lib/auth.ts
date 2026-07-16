@@ -91,3 +91,19 @@ export async function requireAdmin(
   }
   return { ok: true, member };
 }
+
+// Guardia estándar multi-organización: TODA ruta con datos por cliente la
+// usa para saber QUÉ organización ve este usuario. Relee el miembro de la
+// DB (rol/activo/org frescos).
+export async function requireMember(
+  req: NextRequest
+): Promise<{ ok: true; member: TeamMember; orgId: number } | { ok: false; response: NextResponse }> {
+  const member = await getSessionMember(req);
+  if (!member) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: "No autenticado. Inicia sesión." }, { status: 401 }),
+    };
+  }
+  return { ok: true, member, orgId: member.org_id };
+}

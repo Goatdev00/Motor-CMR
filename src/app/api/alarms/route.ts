@@ -3,11 +3,13 @@ import {
   ALARM_KINDS,
   ALARM_REPEATS,
   createAlarm,
+  getConversationById,
   listAlarms,
   type AlarmDraft,
   type AlarmKind,
   type AlarmRepeat,
 } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -21,9 +23,12 @@ function migrationHint(message: string): string {
 }
 
 // Todas las alarmas (activas primero, luego por fecha de disparo).
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
-    const alarms = await listAlarms();
+    const alarms = await listAlarms(orgId);
     return NextResponse.json({ alarms });
   } catch (err) {
     return NextResponse.json(
@@ -34,6 +39,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) return NextResponse.json({ error: "body inválido" }, { status: 400 });
@@ -89,6 +97,11 @@ export async function POST(req: NextRequest) {
       if (!Number.isInteger(v) || v <= 0) {
         return NextResponse.json({ error: "Lead inválido" }, { status: 400 });
       }
+      // Guarda multi-org: el lead vinculado debe ser de la organización del usuario.
+      const convo = await getConversationById(v, orgId);
+      if (!convo) {
+        return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
+      }
       conversationId = v;
     }
 
@@ -103,7 +116,7 @@ export async function POST(req: NextRequest) {
       next_fire_at: nextFireAt,
       repeat_every: repeat,
     };
-    const alarm = await createAlarm(draft);
+    const alarm = await createAlarm(orgId, draft);
     return NextResponse.json({ ok: true, alarm });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Error desconocido";

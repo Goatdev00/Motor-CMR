@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getConversationById, getLeadNotes } from "@/lib/db";
 import { getLlm, maxTokensParam } from "@/lib/llm";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,10 @@ interface GenBody {
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const body = (await req.json().catch(() => null)) as GenBody | null;
     const channel = (body?.channel ?? "") as GenChannel;
     if (!GEN_CHANNELS.includes(channel)) {
@@ -49,7 +54,7 @@ export async function POST(req: NextRequest) {
     // Contexto del lead (opcional): campos del CRM + últimas notas.
     let leadContext = "";
     if (Number.isInteger(body?.leadId) && (body!.leadId as number) > 0) {
-      const lead = await getConversationById(body!.leadId as number);
+      const lead = await getConversationById(body!.leadId as number, orgId);
       if (lead) {
         const notes = await getLeadNotes(lead.id).catch(() => []);
         const parts = [
@@ -71,7 +76,7 @@ export async function POST(req: NextRequest) {
       `Redacta ${CHANNEL_STYLE[channel]}` +
       '\n\nResponde SOLO con JSON válido, sin markdown: {"subject": "...", "body": "..."} — en canales que no llevan asunto, subject debe ser una cadena vacía.';
 
-    const { client, model, provider } = await getLlm();
+    const { client, model, provider } = await getLlm(orgId);
     const completion = await client.chat.completions.create({
       model,
       messages: [

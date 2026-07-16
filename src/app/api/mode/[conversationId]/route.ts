@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getConversationById, setMode, type ConversationMode } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 interface Ctx {
   params: Promise<{ conversationId: string }>;
@@ -7,6 +8,10 @@ interface Ctx {
 
 export async function POST(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = Number(conversationId);
     if (!Number.isInteger(id) || id <= 0) {
@@ -19,7 +24,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       return NextResponse.json({ error: "mode debe ser 'AI' o 'HUMAN'" }, { status: 400 });
     }
 
-    const conversation = await getConversationById(id);
+    const conversation = await getConversationById(id, orgId);
     if (!conversation) {
       return NextResponse.json({ error: "Conversación no encontrada" }, { status: 404 });
     }

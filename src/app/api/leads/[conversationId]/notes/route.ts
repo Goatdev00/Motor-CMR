@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { addLeadNote, getConversationById } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 interface Ctx {
   params: Promise<{ conversationId: string }>;
@@ -8,6 +9,10 @@ interface Ctx {
 // Nota interna del lead (solo visible en el dashboard, nunca se envía).
 export async function POST(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = Number(conversationId);
     if (!Number.isInteger(id) || id <= 0) {
@@ -18,7 +23,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     const content = typeof body?.content === "string" ? body.content.trim() : "";
     if (!content) return NextResponse.json({ error: "content requerido" }, { status: 400 });
 
-    const lead = await getConversationById(id);
+    const lead = await getConversationById(id, orgId);
     if (!lead) return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
 
     const note = await addLeadNote(id, content);

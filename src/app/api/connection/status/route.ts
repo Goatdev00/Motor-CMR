@@ -1,14 +1,18 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { listWaAccounts } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 // Sin esto Next puede cachear el GET como estático y el polling no ve cambios.
 export const dynamic = "force-dynamic";
 
 // Resumen agregado de las cuentas de WhatsApp (para el chip del header).
 // La gestión por cuenta (QR, desvincular, etc.) vive en /api/team/accounts.
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
-    const accounts = await listWaAccounts();
+    const accounts = await listWaAccounts(orgId);
     const connected = accounts.filter((a) => a.status === "connected");
     return NextResponse.json({
       connected: connected.length > 0,

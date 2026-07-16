@@ -30,8 +30,9 @@ export interface KeywordTriggersDoc {
   triggers: KeywordTrigger[];
 }
 
-export async function readKeywordTriggersDoc(): Promise<KeywordTriggersDoc> {
-  const raw = await getAppSetting<unknown>(SETTING_KEY);
+// Todo es POR ORGANIZACIÓN: cada cliente tiene sus propias palabras clave.
+export async function readKeywordTriggersDoc(orgId: number): Promise<KeywordTriggersDoc> {
+  const raw = await getAppSetting<unknown>(orgId, SETTING_KEY);
   if (raw && typeof raw === "object" && !Array.isArray(raw) && "triggers" in raw) {
     const doc = raw as { rev?: unknown; triggers?: unknown };
     return {
@@ -42,37 +43,41 @@ export async function readKeywordTriggersDoc(): Promise<KeywordTriggersDoc> {
   return { rev: null, triggers: sanitizeTriggerList(raw) };
 }
 
-export async function readKeywordTriggers(): Promise<KeywordTrigger[]> {
-  return (await readKeywordTriggersDoc()).triggers;
+export async function readKeywordTriggers(orgId: number): Promise<KeywordTrigger[]> {
+  return (await readKeywordTriggersDoc(orgId)).triggers;
 }
 
 // Guarda y devuelve el rev nuevo (la UI lo conserva como base del próximo
 // guardado).
-export async function saveKeywordTriggers(triggers: KeywordTrigger[]): Promise<string> {
+export async function saveKeywordTriggers(
+  orgId: number,
+  triggers: KeywordTrigger[]
+): Promise<string> {
   const rev = randomUUID();
-  await setAppSetting(SETTING_KEY, { rev, triggers });
-  cache = { at: 0, triggers: null }; // invalidar el caché de este proceso
+  await setAppSetting(orgId, SETTING_KEY, { rev, triggers });
+  cache.delete(orgId); // invalidar el caché de este proceso
   return rev;
 }
 
 // ── Caché para el hot path del bot ──────────────────────────
 // Un mensaje entrante no debe costar una lectura extra de Supabase: se
-// cachea la lista unos segundos. El proceso del dashboard y el del bot son
-// procesos distintos — cada uno tiene su caché y expira solo (≤15 s de
-// retardo para que un cambio de plantillas llegue al bot).
+// cachea la lista unos segundos POR ORGANIZACIÓN. El proceso del dashboard
+// y el del bot son procesos distintos — cada uno tiene su caché y expira
+// solo (≤15 s de retardo para que un cambio de plantillas llegue al bot).
 const CACHE_TTL_MS = 15_000;
-let cache: { at: number; triggers: KeywordTrigger[] | null } = { at: 0, triggers: null };
+const cache = new Map<number, { at: number; triggers: KeywordTrigger[] }>();
 
-export async function getKeywordTriggersCached(): Promise<KeywordTrigger[]> {
+export async function getKeywordTriggersCached(orgId: number): Promise<KeywordTrigger[]> {
   const now = Date.now();
-  if (cache.triggers && now - cache.at < CACHE_TTL_MS) return cache.triggers;
+  const hit = cache.get(orgId);
+  if (hit && now - hit.at < CACHE_TTL_MS) return hit.triggers;
   try {
-    const triggers = await readKeywordTriggers();
-    cache = { at: now, triggers };
+    const triggers = await readKeywordTriggers(orgId);
+    cache.set(orgId, { at: now, triggers });
     return triggers;
   } catch (err) {
     // Blip de Supabase: se sigue con lo último conocido (o sin triggers).
     console.error("[bot] No se pudieron leer las palabras clave (se usa el caché):", err);
-    return cache.triggers ?? [];
+    return hit?.triggers ?? [];
   }
 }

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { deleteCalendarEvent, updateCalendarEvent } from "@/lib/db";
 import { parseEventInput } from "@/lib/calendar";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
@@ -24,7 +28,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Nada que actualizar" }, { status: 400 });
     }
 
-    const event = await updateCalendarEvent(id, parsed.draft);
+    const event = await updateCalendarEvent(id, parsed.draft, orgId);
     if (!event) return NextResponse.json({ error: "Evento no encontrado" }, { status: 404 });
     return NextResponse.json({ event });
   } catch (err) {
@@ -41,13 +45,16 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
-    await deleteCalendarEvent(id);
+    await deleteCalendarEvent(id, orgId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

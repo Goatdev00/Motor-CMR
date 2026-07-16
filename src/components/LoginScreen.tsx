@@ -9,6 +9,9 @@ export interface SessionUser {
   name: string;
   role: TeamRole;
   username: string | null;
+  // Organización a la que pertenece; 1 = la agencia (ve la gestión de
+  // organizaciones). Opcional por compatibilidad con sesiones previas.
+  org_id?: number;
 }
 
 interface Props {

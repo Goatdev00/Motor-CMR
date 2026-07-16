@@ -1,12 +1,17 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { getEmailStats, listRecentEmails } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 // Estado de la cola de correos para la pestaña Mailing (poll del dashboard).
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const [stats, recent] = await Promise.all([getEmailStats(), listRecentEmails(20)]);
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
+    const [stats, recent] = await Promise.all([getEmailStats(orgId), listRecentEmails(orgId, 20)]);
     // El html completo no se necesita en la lista; se recorta para el poll.
     const items = recent.map((e) => ({
       id: e.id,

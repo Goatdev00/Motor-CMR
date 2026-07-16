@@ -8,8 +8,9 @@ import {
 import { updateLeadFields } from "@/lib/db";
 import {
   fetchProfileName,
-  getChannelSettingsCached,
+  getAllOrgsChannelSettingsCached,
   getWebhookVerifyToken,
+  resolveOrgForEvent,
   sendChannelText,
   verifyMetaSignature,
 } from "@/lib/meta";
@@ -48,9 +49,13 @@ interface WhatsAppApiMessage {
 interface MetaWebhookPayload {
   object?: string;
   entry?: Array<{
+    // Id del DESTINATARIO del batch: page id (Messenger) o IG user id
+    // (Instagram) — la llave para enrutar el evento a su organización.
+    id?: string;
     messaging?: MessengerEvent[];
     changes?: Array<{
       value?: {
+        metadata?: { phone_number_id?: string };
         messages?: WhatsAppApiMessage[];
         contacts?: Array<{ profile?: { name?: string }; wa_id?: string }>;
       };
@@ -98,28 +103,42 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-// Extrae los mensajes soportados del payload como InboundMessage.
-function extractInbound(
-  payload: MetaWebhookPayload,
-  settings: Record<string, { enabled: boolean }>
-): InboundMessage[] {
+// ¿El canal está habilitado en la organización? (mapa org→canal→enabled a
+// partir de las filas de todas las organizaciones).
+function channelEnabledForOrg(
+  rows: { org_id: number; channel: string; enabled: boolean }[],
+  orgId: number,
+  channel: string
+): boolean {
+  return rows.some((r) => r.org_id === orgId && r.channel === channel && r.enabled);
+}
+
+// Extrae los mensajes soportados del payload como InboundMessage, resolviendo
+// la ORGANIZACIÓN de cada entry por el id del destinatario.
+async function extractInbound(payload: MetaWebhookPayload): Promise<InboundMessage[]> {
   const out: InboundMessage[] = [];
+  const allRows = await getAllOrgsChannelSettingsCached();
 
   if (payload.object === "page" || payload.object === "instagram") {
     const channel: Channel = payload.object === "page" ? "messenger" : "instagram";
-    if (!settings[channel]?.enabled) return out;
     for (const entry of payload.entry ?? []) {
+      const orgId = await resolveOrgForEvent(
+        channel as "messenger" | "instagram",
+        entry.id ?? ""
+      );
+      if (!channelEnabledForOrg(allRows, orgId, channel)) continue;
       for (const event of entry.messaging ?? []) {
         const senderId = event.sender?.id;
         const text = event.message?.text;
         // is_echo = mensajes enviados por la propia página; se ignoran.
         if (!senderId || !text || event.message?.is_echo) continue;
         out.push({
+          orgId,
           channel,
           externalId: senderId,
           text,
           dedupeKey: event.message?.mid ?? null,
-          send: (reply) => sendChannelText(channel, senderId, reply),
+          send: (reply) => sendChannelText(orgId, channel, senderId, reply),
         });
       }
     }
@@ -127,22 +146,27 @@ function extractInbound(
   }
 
   if (payload.object === "whatsapp_business_account") {
-    if (!settings["whatsapp_api"]?.enabled) return out;
     for (const entry of payload.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value;
         if (!value?.messages) continue; // statuses/otros eventos: fuera de scope
+        const orgId = await resolveOrgForEvent(
+          "whatsapp_api",
+          value.metadata?.phone_number_id ?? ""
+        );
+        if (!channelEnabledForOrg(allRows, orgId, "whatsapp_api")) continue;
         for (const message of value.messages) {
           if (message.type !== "text" || !message.from || !message.text?.body) continue;
           const from = message.from;
           out.push({
+            orgId,
             channel: "whatsapp_api",
             externalId: from,
             phone: from,
             text: message.text.body,
             name: value.contacts?.find((c) => c.wa_id === from)?.profile?.name ?? null,
             dedupeKey: message.id ?? null,
-            send: (reply) => sendChannelText("whatsapp_api", from, reply),
+            send: (reply) => sendChannelText(orgId, "whatsapp_api", from, reply),
           });
         }
       }
@@ -156,8 +180,7 @@ function extractInbound(
 
 // Fase 1 para todo el batch. Devuelve cuántos eventos fallaron al persistir.
 async function persistPhase(payload: MetaWebhookPayload): Promise<number> {
-  const settings = await getChannelSettingsCached();
-  const messages = extractInbound(payload, settings);
+  const messages = await extractInbound(payload);
   let failures = 0;
 
   for (const msg of messages) {
@@ -171,7 +194,7 @@ async function persistPhase(payload: MetaWebhookPayload): Promise<number> {
         // Nombre del perfil solo si aún no lo tenemos (una llamada por lead,
         // no por mensaje).
         if (!persisted.name && (msg.channel === "messenger" || msg.channel === "instagram")) {
-          const name = await fetchProfileName(msg.channel, msg.externalId);
+          const name = await fetchProfileName(msg.orgId, msg.channel, msg.externalId);
           if (name) {
             try {
               await updateLeadFields(persisted.conversationId, { name });

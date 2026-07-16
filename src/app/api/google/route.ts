@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { requireMember } from "@/lib/auth";
 import {
   getGoogleSettings,
   isGoogleConfigured,
@@ -15,9 +16,11 @@ function maskSecret(value: string | undefined): string {
   return value.length > 4 ? `••••${value.slice(-4)}` : "••••";
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
   try {
-    const settings = await getGoogleSettings();
+    const settings = await getGoogleSettings(auth.orgId);
     return NextResponse.json({
       configured: isGoogleConfigured(settings),
       connected: isGoogleConnected(settings),
@@ -37,6 +40,9 @@ export async function GET() {
 // Google Cloud Console). Mandar de vuelta la máscara conserva el secreto
 // actual, igual que en la configuración de canales.
 export async function PUT(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = (await req.json().catch(() => null)) as {
       client_id?: unknown;
@@ -48,7 +54,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "client_id requerido" }, { status: 400 });
     }
 
-    const current = await getGoogleSettings();
+    const current = await getGoogleSettings(orgId);
     // Cambiar de cliente OAuth invalida el refresh_token (está atado al
     // client_id): se descarta para que la UI pida reconectar.
     const clientChanged = current.client_id !== undefined && current.client_id !== clientId;
@@ -76,13 +82,13 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "client_secret requerido" }, { status: 400 });
     }
 
-    await saveGoogleSettings({
+    await saveGoogleSettings(orgId, {
       client_id: clientId,
       client_secret: secret,
       ...(clientChanged ? { refresh_token: "", email: "" } : {}),
     });
 
-    const settings = await getGoogleSettings();
+    const settings = await getGoogleSettings(orgId);
     return NextResponse.json({
       ok: true,
       configured: isGoogleConfigured(settings),
@@ -102,11 +108,14 @@ export async function PUT(req: NextRequest) {
 // Desconecta la cuenta: revoca el grant en Google (best-effort) y descarta
 // el refresh_token; las credenciales del cliente OAuth se conservan para
 // poder reconectar con un clic.
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
-    const current = await getGoogleSettings();
+    const current = await getGoogleSettings(orgId);
     if (current.refresh_token) await revokeGoogleToken(current.refresh_token);
-    await saveGoogleSettings({ refresh_token: "", email: "" });
+    await saveGoogleSettings(orgId, { refresh_token: "", email: "" });
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

@@ -4,6 +4,7 @@ import {
   getMessages,
   insertHumanMessage,
 } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -18,15 +19,19 @@ function parseId(raw: string): number | null {
 
 // Devuelve la conversación (incluye mode, para mantener el toggle en sync)
 // y sus mensajes. El dashboard lo pollea cada 2s.
-export async function GET(_req: NextRequest, { params }: Ctx) {
+export async function GET(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = parseId(conversationId);
     if (!id) {
       return NextResponse.json({ error: "conversationId inválido" }, { status: 400 });
     }
 
-    const conversation = await getConversationById(id);
+    const conversation = await getConversationById(id, orgId);
     if (!conversation) {
       return NextResponse.json({ error: "Conversación no encontrada" }, { status: 404 });
     }
@@ -46,6 +51,10 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
 // proceso bot lo envía por Baileys en ≤2s.
 export async function POST(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = parseId(conversationId);
     if (!id) {
@@ -58,7 +67,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       return NextResponse.json({ error: "content requerido" }, { status: 400 });
     }
 
-    const conversation = await getConversationById(id);
+    const conversation = await getConversationById(id, orgId);
     if (!conversation) {
       return NextResponse.json({ error: "Conversación no encontrada" }, { status: 404 });
     }

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import QRCode from "qrcode";
 import { createWaAccount, listWaAccounts } from "@/lib/db";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -18,9 +18,11 @@ function migrationHint(message: string): string {
 
 // Cuentas de WhatsApp con su estado en vivo. El QR se entrega como data URL
 // listo para <img> (igual que hacía la pantalla de conexión original).
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const rows = await listWaAccounts();
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const rows = await listWaAccounts(auth.orgId);
     const accounts = await Promise.all(
       rows.map(async (a) => {
         // Defensivo: mostrar el QR si qr_string existe AUNQUE el status sea
@@ -53,19 +55,20 @@ export async function POST(req: NextRequest) {
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
     const body = (await req.json().catch(() => null)) as { label?: unknown } | null;
     const label = typeof body?.label === "string" ? body.label.trim() : "";
     if (!label || label.length > 40) {
       return NextResponse.json({ error: "Nombre requerido (1 a 40 caracteres)" }, { status: 400 });
     }
-    const existing = await listWaAccounts();
+    const existing = await listWaAccounts(orgId);
     if (existing.length >= MAX_ACCOUNTS) {
       return NextResponse.json(
         { error: `Máximo ${MAX_ACCOUNTS} cuentas de WhatsApp` },
         { status: 400 }
       );
     }
-    const account = await createWaAccount(label);
+    const account = await createWaAccount(orgId, label);
     return NextResponse.json({ ok: true, account });
   } catch (err) {
     return NextResponse.json(

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { TEAM_ROLES, type TeamMember, type TeamRole } from "@/lib/db";
 import { DEFAULT_STAGE_CONFIG, STAGE_ORDER, type StageConfigMap } from "@/lib/stages";
 import AiTeamSection from "./AiTeamSection";
+import OrganizationsCard from "./OrganizationsCard";
 import type { SessionUser } from "./LoginScreen";
 
 const cardClass = "rounded-xl border border-neutral-800 bg-neutral-900 p-4";
@@ -413,6 +414,9 @@ export default function TeamPanel({ currentUser }: { currentUser: SessionUser })
           <AiTeamSection isAdmin={isAdmin} stageConfig={stageConfig} />
         ) : (
           <>
+        {/* Gestión de organizaciones: SOLO Admins de la agencia (org 1) */}
+        {isAdmin && (currentUser.org_id ?? 1) === 1 && <OrganizationsCard />}
+
         {/* ── Cuentas de WhatsApp ── */}
         <div className={`${cardClass} ${isAdmin ? "" : "pointer-events-none select-none"}`}>
           <h2 className="text-sm font-semibold text-neutral-100">Cuentas de WhatsApp</h2>

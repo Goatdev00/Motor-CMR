@@ -10,12 +10,12 @@ import {
   countEmailsSentSince,
   enqueueEmails,
   enqueueNotify,
-  getAllChannelSettings,
   getConversationById,
   getDueAlarms,
   getPendingEmails,
   getPendingOutbox,
   insertMessage,
+  listAllChannelSettings,
   listTeamMembers,
   listWaAccounts,
   markEmailSent,
@@ -101,16 +101,16 @@ async function logLlmProvider(): Promise<void> {
 // petición del operador es "suelta este teléfono", no "reinicia si puedes".
 // El flag restart_requested se limpia ANTES de arrancar de nuevo; si el
 // arranque falla, el reintento interno de la sesión se encarga — sin deadlock.
-async function doRelink(accountId: number, restart: boolean): Promise<void> {
-  console.log(`[bot][cuenta ${accountId}] 🔄 Desvinculación solicitada desde el dashboard...`);
-  const session = getOrCreateSession(accountId);
+async function doRelink(account: WaAccount, restart: boolean): Promise<void> {
+  console.log(`[bot][cuenta ${account.id}] 🔄 Desvinculación solicitada desde el dashboard...`);
+  const session = getOrCreateSession(account.id, account.org_id);
   await session.stop({ logout: true });
   try {
     session.clearAuth();
   } catch (err) {
-    console.error(`[bot][cuenta ${accountId}] No se pudieron borrar las credenciales:`, err);
+    console.error(`[bot][cuenta ${account.id}] No se pudieron borrar las credenciales:`, err);
   }
-  await updateWaAccount(accountId, {
+  await updateWaAccount(account.id, {
     status: "disconnected",
     qr_string: null,
     phone: null,
@@ -121,8 +121,12 @@ async function doRelink(accountId: number, restart: boolean): Promise<void> {
 
 // Mantiene el registro de sesiones alineado con la tabla wa_accounts:
 // arranca las habilitadas, detiene las apagadas/borradas, aplica las
-// señales de desvinculación y reconcilia el estado en la DB.
-async function reconcileSessions(masterEnabled: boolean, accounts: WaAccount[]): Promise<void> {
+// señales de desvinculación y reconcilia el estado en la DB. El interruptor
+// maestro del canal WhatsApp es POR ORGANIZACIÓN (masterByOrg).
+async function reconcileSessions(
+  masterByOrg: Map<number, boolean>,
+  accounts: WaAccount[]
+): Promise<void> {
   const byId = new Map(accounts.map((a) => [a.id, a]));
 
   // Cuentas eliminadas desde el dashboard: sesión fuera + credenciales
@@ -145,19 +149,20 @@ async function reconcileSessions(masterEnabled: boolean, accounts: WaAccount[]):
   }
 
   for (const account of accounts) {
-    const shouldRun = masterEnabled && account.enabled;
+    const orgMaster = masterByOrg.get(account.org_id) ?? true;
+    const shouldRun = orgMaster && account.enabled;
     const session = getSession(account.id);
 
     // La desvinculación se honra SIEMPRE (logout + credenciales borradas);
     // shouldRun solo decide si después se arranca de nuevo para el QR.
     if (account.restart_requested) {
-      await doRelink(account.id, shouldRun);
+      await doRelink(account, shouldRun);
       continue;
     }
 
     if (shouldRun && !session?.isActive()) {
-      console.log(`[bot][cuenta ${account.id}] Iniciando sesión (${account.label})...`);
-      void getOrCreateSession(account.id).start();
+      console.log(`[bot][cuenta ${account.id}] Iniciando sesión (${account.label}, org ${account.org_id})...`);
+      void getOrCreateSession(account.id, account.org_id).start();
     } else if (!shouldRun && session?.isActive()) {
       console.log(`[bot][cuenta ${account.id}] Deshabilitada — deteniendo sesión`);
       await session.stop({ logout: false });
@@ -282,9 +287,11 @@ function nextAlarmFire(from: number, repeat: string): number | null {
 
 // Dispara las alarmas vencidas: reclama (condicional: si el operador la
 // reprogramó/apagó a mitad del lote, NO se dispara) y encola el aviso por
-// WhatsApp (outbox notify) o correo (email_queue). El envío real lo hacen
-// los workers de siempre con sus reintentos.
-async function flushAlarms(settings: Record<string, ChannelSettingsRow> | null): Promise<void> {
+// WhatsApp (outbox notify) o correo (email_queue) EN LA ORGANIZACIÓN de la
+// alarma. El envío real lo hacen los workers de siempre con sus reintentos.
+async function flushAlarms(
+  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null
+): Promise<void> {
   let due: Alarm[];
   try {
     due = await getDueAlarms(10);
@@ -292,11 +299,12 @@ async function flushAlarms(settings: Record<string, ChannelSettingsRow> | null):
     return; // tabla sin migrar o blip: siguiente tick
   }
   for (const alarm of due) {
-    // Alarma por correo sin cuenta SMTP configurada/activada: NO se reclama
-    // (dispararía "en falso" con la cola muerta). Queda vencida con el error
-    // visible; en cuanto Mailing esté listo, el disparo sale solo.
-    if (alarm.via === "email" && settings) {
-      const row = settings["email"];
+    // Alarma por correo sin cuenta SMTP configurada/activada EN SU
+    // organización: NO se reclama (dispararía "en falso" con la cola
+    // muerta). Queda vencida con el error visible; en cuanto Mailing esté
+    // listo, el disparo sale solo.
+    if (alarm.via === "email" && settingsByOrg) {
+      const row = settingsByOrg.get(alarm.org_id)?.["email"];
       if (!row?.enabled || parseEmailConfig(row) === null) {
         const msg = "La cuenta de correo (pestaña Mailing) no está configurada o está apagada";
         if (alarm.last_error !== msg) {
@@ -332,13 +340,18 @@ async function flushAlarms(settings: Record<string, ChannelSettingsRow> | null):
     const label = ALARM_KIND_LABELS[alarm.kind] ?? "Recordatorio";
     try {
       if (alarm.via === "whatsapp" && alarm.to_phone) {
-        await enqueueNotify(alarm.to_phone, `AGENTE · ${label}: ${alarm.title}\n\n${alarm.message}`);
+        await enqueueNotify(
+          alarm.org_id,
+          alarm.to_phone,
+          `AGENTE · ${label}: ${alarm.title}\n\n${alarm.message}`
+        );
       } else if (alarm.via === "email" && alarm.to_email) {
         await enqueueEmails([
           {
             to_email: alarm.to_email,
             subject: `AGENTE · ${label}: ${alarm.title}`,
             html: textToHtml(alarm.message),
+            org_id: alarm.org_id,
           },
         ]);
       } else {
@@ -378,61 +391,94 @@ const pendingFinalize = new Map<number, FollowupFinalize>();
 
 // Últimos valores conocidos (ante blips de Supabase se conserva el estado
 // en vez de re-encender/apagar sesiones con datos a medias).
-let lastKnownMasterEnabled = true;
+// Multi-organización: el interruptor maestro de WhatsApp y la configuración
+// de canales son POR organización.
+let lastKnownMasterByOrg = new Map<number, boolean>();
+let lastKnownSettingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null = null;
+
+// Agrupa las filas de channel_settings por organización.
+function groupSettingsByOrg(
+  rows: ChannelSettingsRow[]
+): Map<number, Record<string, ChannelSettingsRow>> {
+  const map = new Map<number, Record<string, ChannelSettingsRow>>();
+  for (const row of rows) {
+    let orgMap = map.get(row.org_id);
+    if (!orgMap) {
+      orgMap = {};
+      map.set(row.org_id, orgMap);
+    }
+    orgMap[row.channel] = row;
+  }
+  return map;
+}
 
 // ── Worker de la cola de correos (Mailing) ──────────────────
-// Ritmo base: hasta 2 correos por tick de 2s (≈60/min máximo). Los límites
-// por hora/día son OPCIONALES: si están configurados en la cuenta, se
-// respetan contando lo ya enviado en la ventana.
-async function flushEmailQueue(settings: Record<string, ChannelSettingsRow>): Promise<void> {
-  const row = settings["email"];
-  if (!row?.enabled) return;
-  const config = parseEmailConfig(row);
-  if (!config) return; // cuenta incompleta: no hay nada que hacer
+// Ritmo base: hasta 2 correos por tick de 2s POR ORGANIZACIÓN. Cada correo
+// sale por la cuenta SMTP de SU organización, y los límites por hora/día
+// (opcionales) se cuentan por organización.
+async function flushEmailQueue(
+  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>>
+): Promise<void> {
+  // Lote generoso: se agrupa por organización y cada una toma hasta 2.
+  const pending = await getPendingEmails(40);
+  if (pending.length === 0) return;
 
-  let allowance = 2;
-  const now = Math.floor(Date.now() / 1000);
-  if (config.maxPerHour !== null) {
-    const sentLastHour = await countEmailsSentSince(now - 3600);
-    allowance = Math.min(allowance, config.maxPerHour - sentLastHour);
-  }
-  if (allowance > 0 && config.maxPerDay !== null) {
-    const sentLastDay = await countEmailsSentSince(now - 86400);
-    allowance = Math.min(allowance, config.maxPerDay - sentLastDay);
-  }
-  if (allowance <= 0) return; // límite alcanzado: se retoma solo al liberarse
-
-  const pending = await getPendingEmails(allowance);
+  const byOrg = new Map<number, typeof pending>();
   for (const item of pending) {
-    let claimed = false;
-    try {
-      claimed = await claimEmail(item.id);
-    } catch (err) {
-      console.error(`[bot] No se pudo reclamar email #${item.id}:`, err);
-      continue;
-    }
-    if (!claimed) continue;
+    const list = byOrg.get(item.org_id) ?? [];
+    list.push(item);
+    byOrg.set(item.org_id, list);
+  }
 
-    try {
-      await sendEmail(config, {
-        to: item.to_email,
-        toName: item.to_name,
-        subject: item.subject,
-        html: item.html,
-        replyTo: item.reply_to ?? null,
-      });
-      await markEmailSent(item.id);
-      console.log(`[bot] ✉️  Email #${item.id} enviado a ${item.to_email}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[bot] Falló email #${item.id} a ${item.to_email}:`, message);
+  for (const [orgId, items] of byOrg) {
+    const row = settingsByOrg.get(orgId)?.["email"];
+    if (!row?.enabled) continue; // esta organización no tiene Mailing activo
+    const config = parseEmailConfig(row);
+    if (!config) continue; // cuenta incompleta: no hay nada que hacer
+
+    let allowance = 2;
+    const now = Math.floor(Date.now() / 1000);
+    if (config.maxPerHour !== null) {
+      const sentLastHour = await countEmailsSentSince(now - 3600, orgId);
+      allowance = Math.min(allowance, config.maxPerHour - sentLastHour);
+    }
+    if (allowance > 0 && config.maxPerDay !== null) {
+      const sentLastDay = await countEmailsSentSince(now - 86400, orgId);
+      allowance = Math.min(allowance, config.maxPerDay - sentLastDay);
+    }
+    if (allowance <= 0) continue; // límite alcanzado: se retoma al liberarse
+
+    for (const item of items.slice(0, allowance)) {
+      let claimed = false;
       try {
-        const discarded = await releaseEmailFailure(item, message);
-        if (discarded) {
-          console.error(`[bot] ⚠️ Email #${item.id} descartado tras agotar reintentos`);
+        claimed = await claimEmail(item.id);
+      } catch (err) {
+        console.error(`[bot] No se pudo reclamar email #${item.id}:`, err);
+        continue;
+      }
+      if (!claimed) continue;
+
+      try {
+        await sendEmail(config, {
+          to: item.to_email,
+          toName: item.to_name,
+          subject: item.subject,
+          html: item.html,
+          replyTo: item.reply_to ?? null,
+        });
+        await markEmailSent(item.id);
+        console.log(`[bot] ✉️  Email #${item.id} (org ${orgId}) enviado a ${item.to_email}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[bot] Falló email #${item.id} a ${item.to_email}:`, message);
+        try {
+          const discarded = await releaseEmailFailure(item, message);
+          if (discarded) {
+            console.error(`[bot] ⚠️ Email #${item.id} descartado tras agotar reintentos`);
+          }
+        } catch (relErr) {
+          console.error(`[bot] No se pudo liberar email #${item.id}:`, relErr);
         }
-      } catch (relErr) {
-        console.error(`[bot] No se pudo liberar email #${item.id}:`, relErr);
       }
     }
   }
@@ -459,8 +505,12 @@ async function resolveWaSession(
   item: OutboxItem,
   getMembers: () => Promise<Map<number, TeamMember>>
 ): Promise<BaileysSession | null> {
-  if (item.wa_account_id != null) return getOpenSession(item.wa_account_id);
-  if (item.kind === "notify" || item.conversation_id == null) return getOpenSession(null);
+  // TODAS las resoluciones quedan confinadas a la organización del envío:
+  // un lead de un cliente jamás recibe mensajes desde el WhatsApp de otro.
+  if (item.wa_account_id != null) return getOpenSession(item.wa_account_id, item.org_id);
+  if (item.kind === "notify" || item.conversation_id == null) {
+    return getOpenSession(null, item.org_id);
+  }
   try {
     const conv = await getConversationById(item.conversation_id);
     if (conv) {
@@ -474,53 +524,53 @@ async function resolveWaSession(
       if (conv.wa_account_id != null) candidates.push(conv.wa_account_id);
       for (const accountId of candidates) {
         const s = getSession(accountId);
-        if (s?.isOpen()) return s;
+        if (s?.isOpen() && s.orgId === item.org_id) return s;
       }
     }
   } catch {
-    /* fallback a cualquier sesión abierta */
+    /* fallback a cualquier sesión abierta de la organización */
   }
-  return getOpenSession(null);
+  return getOpenSession(null, item.org_id);
 }
 
 // Envío según canal: WhatsApp usa la sesión resuelta; los canales de Meta
-// van por HTTPS (Graph API) y funcionan aunque no haya sesiones de QR.
+// van por HTTPS (Graph API) con los tokens de la organización del envío.
 async function deliverOutboxItem(
   item: OutboxItem,
   getMembers: () => Promise<Map<number, TeamMember>>
 ): Promise<void> {
   if (item.channel === "whatsapp") {
     const session = await resolveWaSession(item, getMembers);
-    if (!session) throw new Error("Ninguna cuenta de WhatsApp conectada");
+    if (!session) {
+      throw new Error(`Ninguna cuenta de WhatsApp conectada en la organización ${item.org_id}`);
+    }
     await session.send(`${item.phone}@s.whatsapp.net`, item.content);
     return;
   }
-  await sendChannelText(item.channel, item.phone, item.content);
+  await sendChannelText(item.org_id, item.channel, item.phone, item.content);
 }
 
 // ¿Se puede intentar la entrega ahora? (evita reclamar filas que no van a
-// poder enviarse: sin sesiones de WhatsApp o canal de Meta deshabilitado).
-function isDeliverable(item: OutboxItem, disabledChannels: Set<string>): boolean {
-  if (disabledChannels.has(item.channel)) return false;
-  if (item.channel === "whatsapp") return anySessionOpen();
-  return true;
+// poder enviarse: sin sesiones de WhatsApp de SU organización o canal de
+// Meta deshabilitado en SU organización).
+function isDeliverable(
+  item: OutboxItem,
+  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null
+): boolean {
+  if (item.channel === "api") return false; // sin canal de respuesta, nunca
+  if (item.channel === "whatsapp") return anySessionOpen(item.org_id);
+  const row = settingsByOrg?.get(item.org_id)?.[item.channel];
+  return row?.enabled ?? false;
 }
 
-async function flushOutbox(): Promise<void> {
-  // Canales que no pueden entregar en este tick: se excluyen de la consulta
-  // para que sus filas atascadas no tapen a los demás (inanición por limit).
+async function flushOutbox(
+  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null
+): Promise<void> {
+  // Exclusiones GLOBALES de la consulta (inanición por limit): 'api' nunca
+  // entrega, y 'whatsapp' solo si no hay NINGUNA sesión abierta en ninguna
+  // organización. El detalle por organización lo decide isDeliverable.
   const disabledChannels = new Set<string>();
-  try {
-    const settings = await getAllChannelSettings();
-    for (const ch of ["whatsapp_api", "messenger", "instagram"]) {
-      if (!(settings[ch]?.enabled ?? false)) disabledChannels.add(ch);
-    }
-  } catch {
-    /* si settings no responde, se intenta con todos */
-  }
   if (!anySessionOpen()) disabledChannels.add("whatsapp");
-  // El canal 'api' (leads inyectados sin teléfono) no tiene forma de
-  // entregar NUNCA: sus filas jamás deben reclamar el limit del lote.
   disabledChannels.add("api");
 
   // Miembros del equipo: se cargan una sola vez por flush y solo si algún
@@ -562,7 +612,7 @@ async function flushOutbox(): Promise<void> {
   const pending = await getPendingOutbox(20, [...disabledChannels]);
   for (const item of pending) {
     if (sentUnrecorded.has(item.id) || pendingFinalize.has(item.id)) continue;
-    if (!isDeliverable(item, disabledChannels)) continue; // cambió a mitad de lote
+    if (!isDeliverable(item, settingsByOrg)) continue; // su organización no puede entregar ahora
 
     // Reclamo condicional (sent=0 → 3): si el operador canceló o reprogramó
     // el seguimiento (o borró la conversación) mientras este lote estaba en
@@ -592,7 +642,7 @@ async function flushOutbox(): Promise<void> {
         const msg = err instanceof Error ? err.message : String(err);
         const connectionIssue = /connection closed|connection was lost|timed out|no disponible/i.test(msg);
         const countAttempt =
-          item.channel === "whatsapp" ? anySessionOpen() && !connectionIssue : true;
+          item.channel === "whatsapp" ? anySessionOpen(item.org_id) && !connectionIssue : true;
         const discarded = await releaseOutboxFailure(item, countAttempt);
         if (discarded) {
           console.error(`[bot] ⚠️ Outbox #${item.id} descartado tras agotar reintentos`);
@@ -709,23 +759,23 @@ async function main(): Promise<void> {
   await refreshInternalPhones(bootAccounts);
 
   // Las sesiones arrancan solo si el canal WhatsApp (QR) está habilitado en
-  // Canales; cada cuenta tiene además su propio toggle en Equipo.
-  const initialSettings = await getAllChannelSettings().catch(() => ({}) as Record<string, never>);
-  const masterEnabledAtBoot =
-    (initialSettings as Record<string, { enabled?: boolean }>)["whatsapp"]?.enabled ?? true;
-  lastKnownMasterEnabled = masterEnabledAtBoot;
-  if (masterEnabledAtBoot) {
-    const enabled = bootAccounts.filter((a) => a.enabled);
-    console.log(`[bot] ${enabled.length} cuenta(s) de WhatsApp habilitada(s)`);
-    for (const account of enabled) {
-      // Con desvinculación pendiente NO se arranca con las credenciales
-      // viejas: el primer reconcileSessions hace logout+clearAuth y recién
-      // ahí arranca limpio pidiendo QR.
-      if (account.restart_requested) continue;
-      void getOrCreateSession(account.id).start();
-    }
-  } else {
-    console.log("[bot] WhatsApp (QR/Baileys) deshabilitado en el dashboard — no se inician sesiones");
+  // Canales DE SU ORGANIZACIÓN; cada cuenta tiene además su toggle en Equipo.
+  const initialRows = await listAllChannelSettings().catch(() => [] as ChannelSettingsRow[]);
+  const initialByOrg = groupSettingsByOrg(initialRows);
+  lastKnownSettingsByOrg = initialByOrg;
+  lastKnownMasterByOrg = new Map(
+    [...initialByOrg.entries()].map(([orgId, rows]) => [orgId, rows["whatsapp"]?.enabled ?? true])
+  );
+  const enabled = bootAccounts.filter(
+    (a) => a.enabled && (lastKnownMasterByOrg.get(a.org_id) ?? true)
+  );
+  console.log(`[bot] ${enabled.length} cuenta(s) de WhatsApp habilitada(s)`);
+  for (const account of enabled) {
+    // Con desvinculación pendiente NO se arranca con las credenciales
+    // viejas: el primer reconcileSessions hace logout+clearAuth y recién
+    // ahí arranca limpio pidiendo QR.
+    if (account.restart_requested) continue;
+    void getOrCreateSession(account.id, account.org_id).start();
   }
 
   // Tick único cada 2s: ciclo de vida de sesiones + señales + outbox +
@@ -735,15 +785,22 @@ async function main(): Promise<void> {
     if (ticking) return;
     ticking = true;
     try {
-      // Toggle maestro del canal (Canales) — ante un blip de Supabase se
-      // conserva el ÚLTIMO valor conocido (inicializar en true aquí
+      // Toggles y configuración POR ORGANIZACIÓN — ante un blip de Supabase
+      // se conserva el ÚLTIMO valor conocido (inicializar en true aquí
       // re-encendía un canal deshabilitado).
-      let masterEnabled = lastKnownMasterEnabled;
-      let settings: Record<string, ChannelSettingsRow> | null = null;
+      let masterByOrg = lastKnownMasterByOrg;
+      let settingsByOrg = lastKnownSettingsByOrg;
       try {
-        settings = await getAllChannelSettings();
-        masterEnabled = settings["whatsapp"]?.enabled ?? true;
-        lastKnownMasterEnabled = masterEnabled;
+        const rows = await listAllChannelSettings();
+        settingsByOrg = groupSettingsByOrg(rows);
+        masterByOrg = new Map(
+          [...settingsByOrg.entries()].map(([orgId, orgRows]) => [
+            orgId,
+            orgRows["whatsapp"]?.enabled ?? true,
+          ])
+        );
+        lastKnownSettingsByOrg = settingsByOrg;
+        lastKnownMasterByOrg = masterByOrg;
       } catch {
         /* si Supabase parpadea, se conserva el estado actual */
       }
@@ -753,19 +810,19 @@ async function main(): Promise<void> {
       try {
         const accounts = await listWaAccounts();
         await refreshInternalPhones(accounts);
-        await reconcileSessions(masterEnabled, accounts);
+        await reconcileSessions(masterByOrg, accounts);
       } catch {
         /* siguiente tick */
       }
 
       // Alarmas vencidas → encolan avisos (outbox notify / email_queue).
-      await flushAlarms(settings);
+      await flushAlarms(settingsByOrg);
 
       // El outbox corre SIEMPRE: los canales de Meta no dependen de Baileys.
-      await flushOutbox();
+      await flushOutbox(settingsByOrg);
 
-      // Cola de correos (Mailing), con sus límites opcionales.
-      if (settings) await flushEmailQueue(settings);
+      // Cola de correos (Mailing), con límites por organización.
+      if (settingsByOrg) await flushEmailQueue(settingsByOrg);
     } catch (err) {
       console.error("[bot] Error en tick de outbox/señales:", err);
     } finally {

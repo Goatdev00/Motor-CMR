@@ -9,12 +9,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const id = Number((await params).id);
     if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json({ error: "id inválido" }, { status: 400 });
     }
-    await deleteApiKey(id);
+    await deleteApiKey(id, orgId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

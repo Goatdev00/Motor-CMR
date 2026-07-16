@@ -32,13 +32,13 @@ function resolvePhone(msg: WAMessage, jid: string): string | null {
   return null;
 }
 
-export function registerMessageHandler(sock: WASocket, accountId: number): void {
+export function registerMessageHandler(sock: WASocket, accountId: number, orgId: number): void {
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     // Solo mensajes nuevos en tiempo real; 'append'/'replace' son sync de historial.
     if (type !== "notify") return;
     for (const msg of messages) {
       try {
-        await handleIncoming(sock, msg, accountId);
+        await handleIncoming(sock, msg, accountId, orgId);
       } catch (err) {
         console.error("[bot] Error procesando mensaje entrante:", err);
       }
@@ -46,7 +46,12 @@ export function registerMessageHandler(sock: WASocket, accountId: number): void 
   });
 }
 
-async function handleIncoming(sock: WASocket, msg: WAMessage, accountId: number): Promise<void> {
+async function handleIncoming(
+  sock: WASocket,
+  msg: WAMessage,
+  accountId: number,
+  orgId: number
+): Promise<void> {
   // Ignorar mensajes propios (enviados desde el teléfono del usuario).
   if (msg.key.fromMe) return;
 
@@ -85,6 +90,8 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, accountId: number)
   }
 
   await handleInbound({
+    // El lead nace en la organización dueña de la cuenta que lo recibió.
+    orgId,
     channel: "whatsapp",
     externalId: phone,
     phone,

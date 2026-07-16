@@ -1,6 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createTeamMember, listTeamMembers, setMemberPassword, TEAM_ROLES, type TeamRole } from "@/lib/db";
-import { requireAdmin } from "@/lib/auth";
+import {
+  createTeamMember,
+  listTeamMembers,
+  listWaAccounts,
+  setMemberPassword,
+  TEAM_ROLES,
+  type TeamRole,
+} from "@/lib/db";
+import { requireAdmin, requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -22,9 +29,11 @@ function normalizePhoneInput(raw: unknown): string | null | "invalid" {
   return digits;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const members = await listTeamMembers();
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const members = await listTeamMembers(auth.orgId);
     return NextResponse.json({ members });
   } catch (err) {
     return NextResponse.json(
@@ -38,6 +47,7 @@ export async function POST(req: NextRequest) {
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const body = (await req.json().catch(() => null)) as {
       name?: unknown;
@@ -61,6 +71,14 @@ export async function POST(req: NextRequest) {
       const v = Number(body.wa_account_id);
       if (!Number.isInteger(v) || v <= 0) {
         return NextResponse.json({ error: "Cuenta inválida" }, { status: 400 });
+      }
+      // La cuenta debe ser de ESTA organización (la FK no distingue orgs).
+      const orgAccounts = await listWaAccounts(orgId);
+      if (!orgAccounts.some((a) => a.id === v)) {
+        return NextResponse.json(
+          { error: "Esa cuenta de WhatsApp no pertenece a tu organización" },
+          { status: 400 }
+        );
       }
       waAccountId = v;
     }
@@ -97,7 +115,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const member = await createTeamMember({
+    const member = await createTeamMember(orgId, {
       name,
       role,
       wa_account_id: waAccountId,

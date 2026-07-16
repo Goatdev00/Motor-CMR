@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "./system-prompt";
-import { getAllChannelSettings } from "./db";
+import { AGENCY_ORG_ID, getAllChannelSettings } from "./db";
 import type { Message } from "./db";
 
 // LLM multi-proveedor: ChatGPT (OpenAI), Claude (Anthropic) o Gemini
@@ -86,50 +86,60 @@ function fromEnv(): LlmConfig | null {
   };
 }
 
-// Caché de config + cliente (por proceso): un mensaje entrante no debe
-// costar una lectura extra de Supabase. Cambios del dashboard aplican en
-// ≤15 s en el proceso del bot (el del dashboard invalida al guardar).
+// Caché de config + clientes (por proceso y POR ORGANIZACIÓN): un mensaje
+// entrante no debe costar una lectura extra de Supabase. Cambios del
+// dashboard aplican en ≤15 s en el proceso del bot (el del dashboard
+// invalida al guardar). Cadena de resolución: proveedor de la organización
+// → proveedor de la agencia (org 1) → OPENAI_API_KEY del .env.local. Así la
+// agencia puede dar IA "de la casa" a los clientes que no traen su clave.
 const CACHE_TTL_MS = 15_000;
-let cachedAt = 0;
-let cachedConfig: LlmConfig | null = null;
-let cachedClient: OpenAI | null = null;
-let cachedClientKey = "";
+const configCache = new Map<number, { at: number; config: LlmConfig | null }>();
+const clientCache = new Map<string, OpenAI>();
 
 export function invalidateLlmCache(): void {
-  cachedAt = 0;
+  configCache.clear();
 }
 
-async function resolveConfig(): Promise<LlmConfig | null> {
+async function resolveConfig(orgId: number): Promise<LlmConfig | null> {
   const now = Date.now();
-  if (now - cachedAt < CACHE_TTL_MS) return cachedConfig;
+  const hit = configCache.get(orgId);
+  if (hit && now - hit.at < CACHE_TTL_MS) return hit.config;
+  let config: LlmConfig | null = null;
   try {
-    const rows = await getAllChannelSettings();
-    cachedConfig = fromSettings(rows["llm"]) ?? fromEnv();
-    cachedAt = now;
+    const rows = await getAllChannelSettings(orgId);
+    config = fromSettings(rows["llm"]);
+    if (!config && orgId !== AGENCY_ORG_ID) {
+      const agencyRows = await getAllChannelSettings(AGENCY_ORG_ID);
+      config = fromSettings(agencyRows["llm"]);
+    }
+    config = config ?? fromEnv();
   } catch {
     // Blip de Supabase (o tabla sin migrar): env o lo último conocido.
-    cachedConfig = cachedConfig ?? fromEnv();
-    cachedAt = now;
+    config = hit?.config ?? fromEnv();
   }
-  return cachedConfig;
+  configCache.set(orgId, { at: now, config });
+  return config;
 }
 
 function clientFor(config: LlmConfig): OpenAI {
   const key = `${config.provider}|${config.apiKey}`;
-  if (!cachedClient || cachedClientKey !== key) {
-    cachedClient = new OpenAI({
+  let client = clientCache.get(key);
+  if (!client) {
+    client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: LLM_PROVIDERS[config.provider].baseURL,
     });
-    cachedClientKey = key;
+    // Tope defensivo: un cliente por combinación proveedor/clave.
+    if (clientCache.size > 100) clientCache.clear();
+    clientCache.set(key, client);
   }
-  return cachedClient;
+  return client;
 }
 
-// Cliente + modelo + proveedor activos. Lanza error claro si no hay nada
-// configurado (ni dashboard ni .env.local).
-export async function getLlm(): Promise<ResolvedLlm> {
-  const config = await resolveConfig();
+// Cliente + modelo + proveedor activos PARA UNA ORGANIZACIÓN. Lanza error
+// claro si no hay nada configurado (ni dashboard ni .env.local).
+export async function getLlm(orgId: number): Promise<ResolvedLlm> {
+  const config = await resolveConfig(orgId);
   if (!config) {
     throw new Error(
       "No hay proveedor de IA configurado: conecta uno en Canales → Inteligencia artificial (o define OPENAI_API_KEY en .env.local)"
@@ -144,8 +154,8 @@ export async function getLlm(): Promise<ResolvedLlm> {
 }
 
 // Descripción del proveedor activo para logs de arranque; null si no hay.
-export async function getLlmProviderInfo(): Promise<string | null> {
-  const config = await resolveConfig();
+export async function getLlmProviderInfo(orgId: number = AGENCY_ORG_ID): Promise<string | null> {
+  const config = await resolveConfig(orgId);
   if (!config) return null;
   return `${LLM_PROVIDERS[config.provider].label} · ${config.model}`;
 }
@@ -183,13 +193,16 @@ export async function verifyLlmConfig(
 }
 
 export async function generateReply(
+  // Organización dueña de la conversación: decide con QUÉ proveedor/clave
+  // de IA se responde.
+  orgId: number,
   history: Pick<Message, "role" | "content">[],
   // Agente de IA que atiende esta conversación (Equipo → Equipo de IA):
   // su especialización se añade al prompt base sin romper la regla de
   // derivación a humano.
   agent?: { name: string; instructions: string } | null
 ): Promise<string> {
-  const { client, model, provider } = await getLlm();
+  const { client, model, provider } = await getLlm(orgId);
 
   const system = agent
     ? `${SYSTEM_PROMPT}\n\n## Rol asignado para esta conversación: ${agent.name}\n${agent.instructions}\n\n(Las reglas de arriba siguen vigentes, incluida la frase exacta de derivación a un asesor humano.)`

@@ -1,18 +1,24 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/db";
 import { analyzeLead } from "@/lib/lead-analysis";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 // Análisis general del pipeline con IA. Anti-sobregasto de tokens: solo se
 // analizan leads con mensajes NUEVOS desde su último análisis
 // (ai_analyzed_at < last_message_at) o nunca analizados. El resto se salta.
-export async function POST() {
+export async function POST(req: NextRequest) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const sb = getSupabase();
     const { data, error } = await sb
       .from("conversations")
-      .select("id, ai_analyzed_at, last_message_at");
+      .select("id, ai_analyzed_at, last_message_at")
+      .eq("org_id", orgId);
     if (error) {
       return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
     }

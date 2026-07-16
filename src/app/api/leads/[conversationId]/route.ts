@@ -10,6 +10,7 @@ import {
   type LeadPatch,
   type LeadStage,
 } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -23,13 +24,17 @@ function parseId(raw: string): number | null {
 }
 
 // Ficha completa del lead: datos + notas internas + historial de actividad.
-export async function GET(_req: NextRequest, { params }: Ctx) {
+export async function GET(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = parseId(conversationId);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
 
-    const lead = await getConversationById(id);
+    const lead = await getConversationById(id, orgId);
     if (!lead) return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
 
     const [notes, events] = await Promise.all([getLeadNotes(id), getLeadEvents(id)]);
@@ -45,11 +50,15 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
 // Edición del lead: etapa (con evento) y/o campos de la ficha (whitelist).
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = parseId(conversationId);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
 
-    const existing = await getConversationById(id);
+    const existing = await getConversationById(id, orgId);
     if (!existing) return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
 
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;

@@ -53,7 +53,7 @@ export async function analyzeLead(conversationId: number): Promise<Conversation 
     .map((m) => `[${m.role}] ${m.content}`)
     .join("\n");
 
-  const { client, model, provider } = await getLlm();
+  const { client, model, provider } = await getLlm(convo.org_id);
   const completion = await client.chat.completions.create({
     model,
     messages: [

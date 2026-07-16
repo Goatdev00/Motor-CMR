@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { randomUUID } from "crypto";
+import { requireMember } from "@/lib/auth";
 import {
   MAX_TRIGGERS,
   keywordDedupeKey,
@@ -18,9 +19,12 @@ export const dynamic = "force-dynamic";
 // El bot relee la lista con un caché de ~15 s, así que los cambios aplican
 // solos.
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
-    const doc = await readKeywordTriggersDoc();
+    const doc = await readKeywordTriggersDoc(orgId);
     return NextResponse.json({ triggers: doc.triggers, rev: doc.rev });
   } catch (err) {
     return NextResponse.json(
@@ -31,6 +35,9 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = (await req.json().catch(() => null)) as {
       triggers?: unknown;
@@ -104,7 +111,7 @@ export async function PUT(req: NextRequest) {
     // Control de concurrencia optimista: si otra pestaña guardó después de
     // que esta cargó la lista, no se machaca — se devuelve la versión
     // vigente para que el operador la recargue.
-    const current = await readKeywordTriggersDoc();
+    const current = await readKeywordTriggersDoc(orgId);
     const baseRev = typeof body.baseRev === "string" ? body.baseRev : null;
     if (current.rev !== null && baseRev !== current.rev) {
       return NextResponse.json(
@@ -119,7 +126,7 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    const rev = await saveKeywordTriggers(triggers);
+    const rev = await saveKeywordTriggers(orgId, triggers);
     return NextResponse.json({ ok: true, triggers, rev });
   } catch (err) {
     return NextResponse.json(

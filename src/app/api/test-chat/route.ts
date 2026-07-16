@@ -4,6 +4,7 @@ import { readAiAgentsDoc } from "@/lib/ai-agents";
 import { selectAgent } from "@/lib/agent-match";
 import { HANDOFF_ACK, botOfferedHandoff, clientRequestsHuman } from "@/lib/reply-engine";
 import { generateReply } from "@/lib/llm";
+import { requireMember } from "@/lib/auth";
 import { LEAD_STAGES, type LeadStage, type MessageRole } from "@/lib/db";
 import { isChannel } from "@/lib/channels";
 
@@ -33,6 +34,11 @@ interface TestChatBody {
 }
 
 export async function POST(req: NextRequest) {
+  // El simulador usa la configuración (palabras clave, agentes, IA) de la
+  // organización del usuario logueado.
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = (await req.json().catch(() => null)) as TestChatBody | null;
     const text = typeof body?.text === "string" ? body.text.trim().slice(0, 4000) : "";
@@ -62,7 +68,7 @@ export async function POST(req: NextRequest) {
       .map((m) => ({ role: m.role as MessageRole, content: m.content.slice(0, 4000) }));
 
     // 1. Palabra clave.
-    const triggers = await readKeywordTriggers();
+    const triggers = await readKeywordTriggers(orgId);
     const trigger = findMatchingTrigger(triggers, text);
     if (trigger && (mode === "AI" || trigger.also_human)) {
       return NextResponse.json({
@@ -91,13 +97,14 @@ export async function POST(req: NextRequest) {
     }
 
     // 4. Agente de IA + LLM real.
-    const { agents } = await readAiAgentsDoc();
+    const { agents } = await readAiAgentsDoc(orgId);
     const selection =
       agents.length > 0
         ? selectAgent(agents, { text, stage, channel, stickyId: stickyAgentId })
         : null;
 
     const reply = await generateReply(
+      orgId,
       [...history, { role: "user", content: text }],
       selection?.agent ?? null
     );

@@ -13,9 +13,13 @@ function migrationHint(message: string): string {
 }
 
 // Claves de la API pública (solo prefijos; el hash nunca sale de la DB).
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const keys = await listApiKeys();
+    const auth = await requireAdmin(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
+
+    const keys = await listApiKeys(orgId);
     return NextResponse.json({ keys });
   } catch (err) {
     return NextResponse.json(
@@ -31,18 +35,19 @@ export async function POST(req: NextRequest) {
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
 
     const body = (await req.json().catch(() => null)) as { label?: unknown } | null;
     const label = typeof body?.label === "string" ? body.label.trim() : "";
     if (!label || label.length > 60) {
       return NextResponse.json({ error: "Nombre requerido (1 a 60 caracteres)" }, { status: 400 });
     }
-    if ((await listApiKeys()).length >= 10) {
+    if ((await listApiKeys(orgId)).length >= 10) {
       return NextResponse.json({ error: "Máximo 10 claves API" }, { status: 400 });
     }
 
     const { key, hash, prefix } = generateApiKey();
-    const row = await createApiKey(label, hash, prefix);
+    const row = await createApiKey(orgId, label, hash, prefix);
     return NextResponse.json({ ok: true, key, row });
   } catch (err) {
     return NextResponse.json(

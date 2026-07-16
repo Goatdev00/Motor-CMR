@@ -1,13 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAppSetting, setAppSetting } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 import { mergeStageConfig, STAGE_ORDER, type StageConfigMap } from "@/lib/stages";
 
 export const dynamic = "force-dynamic";
 
 // Nombres y colores de las etapas del pipeline, personalizables desde el CRM.
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
-    const stored = await getAppSetting<Partial<StageConfigMap>>("stages");
+    const stored = await getAppSetting<Partial<StageConfigMap>>(orgId, "stages");
     return NextResponse.json({ stages: mergeStageConfig(stored) });
   } catch (err) {
     return NextResponse.json(
@@ -18,6 +22,9 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = (await req.json().catch(() => null)) as { stages?: unknown } | null;
     if (!body?.stages || typeof body.stages !== "object") {
@@ -47,7 +54,7 @@ export async function PUT(req: NextRequest) {
       clean[stage] = { label, color };
     }
 
-    await setAppSetting("stages", clean);
+    await setAppSetting(orgId, "stages", clean);
     return NextResponse.json({ ok: true, stages: mergeStageConfig(clean) });
   } catch (err) {
     return NextResponse.json(

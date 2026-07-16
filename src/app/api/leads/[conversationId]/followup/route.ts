@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { cancelFollowUp, getConversationById, scheduleFollowUp } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 interface Ctx {
   params: Promise<{ conversationId: string }>;
@@ -14,6 +15,10 @@ function parseId(raw: string): number | null {
 // a la hora indicada (aunque el dashboard esté cerrado). Uno activo por lead.
 export async function POST(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = parseId(conversationId);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
@@ -31,7 +36,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       return NextResponse.json({ error: "sendAt debe ser una hora futura" }, { status: 400 });
     }
 
-    const lead = await getConversationById(id);
+    const lead = await getConversationById(id, orgId);
     if (!lead) return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
     // Un lead del canal 'api' (inyectado sin teléfono) no tiene por dónde
     // recibir el seguimiento: encolarlo crearía un envío imposible que
@@ -53,13 +58,17 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   }
 }
 
-export async function DELETE(_req: NextRequest, { params }: Ctx) {
+export async function DELETE(req: NextRequest, { params }: Ctx) {
   try {
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const orgId = auth.orgId;
+
     const { conversationId } = await params;
     const id = parseId(conversationId);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
 
-    const lead = await getConversationById(id);
+    const lead = await getConversationById(id, orgId);
     if (!lead) return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
 
     await cancelFollowUp(id);

@@ -4,11 +4,13 @@ import {
   ALARM_REPEATS,
   deleteAlarm,
   getAlarmById,
+  getConversationById,
   updateAlarm,
   type AlarmDraft,
   type AlarmKind,
   type AlarmRepeat,
 } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,9 @@ function parseId(raw: string): number | null {
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
@@ -96,6 +101,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         if (!Number.isInteger(v) || v <= 0) {
           return NextResponse.json({ error: "Lead inválido" }, { status: 400 });
         }
+        // Guarda multi-org: el lead vinculado debe ser de la organización del usuario.
+        const convo = await getConversationById(v, orgId);
+        if (!convo) {
+          return NextResponse.json({ error: "Lead no encontrado" }, { status: 404 });
+        }
         patch.conversation_id = v;
       }
     }
@@ -114,7 +124,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // que el bot la re-enviara en ≤2s (aviso duplicado al cliente sin que
     // el operador lo espere).
     if (patch.active === true) {
-      const current = await getAlarmById(id);
+      const current = await getAlarmById(id, orgId);
       if (!current) return NextResponse.json({ error: "Alarma no encontrada" }, { status: 404 });
       const effRepeat = patch.repeat_every ?? current.repeat_every;
       const effNext = patch.next_fire_at ?? current.next_fire_at;
@@ -126,7 +136,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       }
     }
 
-    const alarm = await updateAlarm(id, patch);
+    const alarm = await updateAlarm(id, patch, orgId);
     if (!alarm) return NextResponse.json({ error: "Alarma no encontrada" }, { status: 404 });
     return NextResponse.json({ ok: true, alarm });
   } catch (err) {
@@ -138,11 +148,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const id = parseId((await params).id);
     if (!id) return NextResponse.json({ error: "id inválido" }, { status: 400 });
-    await deleteAlarm(id);
+    await deleteAlarm(id, orgId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

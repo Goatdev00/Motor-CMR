@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAllChannelSettings, upsertChannelSettings } from "@/lib/db";
+import { requireMember } from "@/lib/auth";
 import { invalidateChannelSettingsCache } from "@/lib/meta";
 import { invalidateLlmCache } from "@/lib/llm";
 import { isChannel } from "@/lib/channels";
@@ -35,9 +36,12 @@ function maskValue(value: string): string {
   return value.length <= 4 ? MASK_PREFIX : `${MASK_PREFIX}${value.slice(-4)}`;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
-    const rows = await getAllChannelSettings();
+    const rows = await getAllChannelSettings(orgId);
     const out: Record<string, { enabled: boolean; config: Record<string, string> }> = {};
     for (const key of SETTING_KEYS) {
       const row = rows[key];
@@ -58,6 +62,9 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
+  const auth = await requireMember(req);
+  if (!auth.ok) return auth.response;
+  const orgId = auth.orgId;
   try {
     const body = (await req.json().catch(() => null)) as {
       channel?: unknown;
@@ -82,7 +89,7 @@ export async function PUT(req: NextRequest) {
     // string vacío borra el campo. Un valor que empiece por la máscara pero
     // traiga más contenido (token pegado detrás de la máscara en un input
     // password) se rechaza con error en vez de descartarse en silencio.
-    const existing = (await getAllChannelSettings())[channel];
+    const existing = (await getAllChannelSettings(orgId))[channel];
     const config: Record<string, string> = { ...(existing?.config ?? {}) };
     if (body?.config && typeof body.config === "object") {
       for (const [k, v] of Object.entries(body.config as Record<string, unknown>)) {
@@ -103,7 +110,7 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    await upsertChannelSettings(channel, enabled, config);
+    await upsertChannelSettings(orgId, channel, enabled, config);
     invalidateChannelSettingsCache();
     // El proveedor de IA se cachea aparte en este proceso (el del bot expira
     // solo en ≤15 s).

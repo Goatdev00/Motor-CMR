@@ -29,6 +29,9 @@ export function authDirFor(accountId: number): string {
 
 export interface BaileysSession {
   readonly accountId: number;
+  // Organización dueña de la cuenta: sus leads nacen en su espacio y los
+  // envíos jamás salen por cuentas de otra organización.
+  readonly orgId: number;
   /** Arranca (con reintento cada 5s si falla el arranque en sí). */
   start(): Promise<void>;
   /** Detiene el socket e invalida arranques/reintentos en vuelo. */
@@ -43,7 +46,7 @@ export interface BaileysSession {
   send(jid: string, text: string): Promise<void>;
 }
 
-function createSession(accountId: number): BaileysSession {
+function createSession(accountId: number, orgId: number): BaileysSession {
   let sockRef: WASocket | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
@@ -196,7 +199,7 @@ function createSession(accountId: number): BaileysSession {
       }
     });
 
-    registerMessageHandler(sock, accountId);
+    registerMessageHandler(sock, accountId, orgId);
   }
 
   async function start(): Promise<void> {
@@ -265,6 +268,7 @@ function createSession(accountId: number): BaileysSession {
 
   return {
     accountId,
+    orgId,
     start: startWithRetry,
     stop,
     isActive: () => sockRef !== null || startingCount > 0 || reconnectTimer !== null || retryTimer !== null,
@@ -283,10 +287,10 @@ function createSession(accountId: number): BaileysSession {
 
 const sessions = new Map<number, BaileysSession>();
 
-export function getOrCreateSession(accountId: number): BaileysSession {
+export function getOrCreateSession(accountId: number, orgId: number): BaileysSession {
   let s = sessions.get(accountId);
   if (!s) {
-    s = createSession(accountId);
+    s = createSession(accountId, orgId);
     sessions.set(accountId, s);
   }
   return s;
@@ -305,19 +309,31 @@ export function removeSession(accountId: number): void {
   sessions.delete(accountId);
 }
 
-export function anySessionOpen(): boolean {
-  for (const s of sessions.values()) if (s.isOpen()) return true;
+// orgId (opcional): considerar solo las sesiones de esa organización.
+export function anySessionOpen(orgId?: number): boolean {
+  for (const s of sessions.values()) {
+    if (orgId !== undefined && s.orgId !== orgId) continue;
+    if (s.isOpen()) return true;
+  }
   return false;
 }
 
 // Sesión abierta preferida: la de la cuenta pedida; si no está abierta (o
-// no se pidió ninguna), la primera abierta. Null si no hay ninguna.
-export function getOpenSession(preferredId?: number | null): BaileysSession | null {
+// no se pidió ninguna), la primera abierta DE LA MISMA ORGANIZACIÓN. Null
+// si no hay ninguna. El filtro por organización es de seguridad: un lead de
+// un cliente JAMÁS debe recibir mensajes desde el WhatsApp de otro cliente.
+export function getOpenSession(
+  preferredId?: number | null,
+  orgId?: number
+): BaileysSession | null {
   if (preferredId != null) {
     const s = sessions.get(preferredId);
-    if (s?.isOpen()) return s;
+    if (s?.isOpen() && (orgId === undefined || s.orgId === orgId)) return s;
   }
-  for (const s of sessions.values()) if (s.isOpen()) return s;
+  for (const s of sessions.values()) {
+    if (orgId !== undefined && s.orgId !== orgId) continue;
+    if (s.isOpen()) return s;
+  }
   return null;
 }
 

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAppSetting, listTeamMembers, setAppSetting } from "@/lib/db";
 import { STAGE_ORDER } from "@/lib/stages";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -21,9 +21,11 @@ function cleanRouting(raw: unknown): RoutingMap {
   return clean;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const stored = await getAppSetting<RoutingMap>("stage_routing");
+    const auth = await requireMember(req);
+    if (!auth.ok) return auth.response;
+    const stored = await getAppSetting<RoutingMap>(auth.orgId, "stage_routing");
     return NextResponse.json({ routing: cleanRouting(stored) });
   } catch (err) {
     return NextResponse.json(
@@ -37,13 +39,14 @@ export async function PUT(req: NextRequest) {
   try {
     const auth = await requireAdmin(req);
     if (!auth.ok) return auth.response;
+    const orgId = auth.member.org_id;
     const body = (await req.json().catch(() => null)) as { routing?: unknown } | null;
     if (!body?.routing || typeof body.routing !== "object") {
       return NextResponse.json({ error: "routing requerido" }, { status: 400 });
     }
     const input = body.routing as Record<string, unknown>;
     const clean: RoutingMap = {};
-    const members = await listTeamMembers();
+    const members = await listTeamMembers(orgId);
     const memberIds = new Set(members.map((m) => m.id));
 
     for (const stage of STAGE_ORDER) {
@@ -60,7 +63,7 @@ export async function PUT(req: NextRequest) {
       clean[stage] = id;
     }
 
-    await setAppSetting("stage_routing", clean);
+    await setAppSetting(orgId, "stage_routing", clean);
     return NextResponse.json({ ok: true, routing: clean });
   } catch (err) {
     return NextResponse.json(

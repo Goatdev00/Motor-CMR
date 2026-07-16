@@ -19,8 +19,9 @@ export interface AiAgentsDoc {
   agents: AiAgent[];
 }
 
-export async function readAiAgentsDoc(): Promise<AiAgentsDoc> {
-  const raw = await getAppSetting<unknown>(SETTING_KEY);
+// Todo es POR ORGANIZACIÓN: cada cliente tiene su propio equipo de IA.
+export async function readAiAgentsDoc(orgId: number): Promise<AiAgentsDoc> {
+  const raw = await getAppSetting<unknown>(orgId, SETTING_KEY);
   if (raw && typeof raw === "object" && !Array.isArray(raw) && "agents" in raw) {
     const doc = raw as { rev?: unknown; agents?: unknown };
     return {
@@ -31,27 +32,28 @@ export async function readAiAgentsDoc(): Promise<AiAgentsDoc> {
   return { rev: null, agents: sanitizeAgentList(raw) };
 }
 
-export async function saveAiAgents(agents: AiAgent[]): Promise<string> {
+export async function saveAiAgents(orgId: number, agents: AiAgent[]): Promise<string> {
   const rev = randomUUID();
-  await setAppSetting(SETTING_KEY, { rev, agents });
-  cache = { at: 0, agents: null };
+  await setAppSetting(orgId, SETTING_KEY, { rev, agents });
+  cache.delete(orgId);
   return rev;
 }
 
 // ── Caché para el hot path del bot (mismo patrón que Plantillas) ──
 const CACHE_TTL_MS = 15_000;
-let cache: { at: number; agents: AiAgent[] | null } = { at: 0, agents: null };
+const cache = new Map<number, { at: number; agents: AiAgent[] }>();
 
-export async function getAiAgentsCached(): Promise<AiAgent[]> {
+export async function getAiAgentsCached(orgId: number): Promise<AiAgent[]> {
   const now = Date.now();
-  if (cache.agents && now - cache.at < CACHE_TTL_MS) return cache.agents;
+  const hit = cache.get(orgId);
+  if (hit && now - hit.at < CACHE_TTL_MS) return hit.agents;
   try {
-    const { agents } = await readAiAgentsDoc();
-    cache = { at: now, agents };
+    const { agents } = await readAiAgentsDoc(orgId);
+    cache.set(orgId, { at: now, agents });
     return agents;
   } catch (err) {
     console.error("[bot] No se pudieron leer los agentes de IA (se usa el caché):", err);
-    return cache.agents ?? [];
+    return hit?.agents ?? [];
   }
 }
 
@@ -77,12 +79,13 @@ function rememberSticky(conversationId: number, agentId: string): void {
 
 // Agente para un mensaje entrante (o null = prompt base de siempre).
 export async function selectAgentForInbound(input: {
+  orgId: number;
   conversationId: number;
   text: string;
   stage: string | null;
   channel: string | null;
 }): Promise<AgentSelection | null> {
-  const agents = await getAiAgentsCached();
+  const agents = await getAiAgentsCached(input.orgId);
   if (agents.length === 0) return null;
   const selection = selectAgent(agents, {
     text: input.text,

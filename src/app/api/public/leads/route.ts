@@ -94,6 +94,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // La organización del lead es la DUEÑA de la clave API usada: cada
+    // cliente de la agencia inyecta leads en SU espacio.
+    const orgId = key.org_id;
+
     // Con teléfono el lead vive en WhatsApp (mismo hilo si luego escribe);
     // sin teléfono, canal 'api' con el correo como identificador (dedupe) o
     // un id sintético si tampoco hay correo.
@@ -104,9 +108,9 @@ export async function POST(req: NextRequest) {
     // 'api') y ahora llega su teléfono, se asciende la MISMA fila a WhatsApp
     // en vez de crear un duplicado.
     let convo =
-      phone && email ? await upgradeApiLeadToWhatsapp(email, phone) : null;
+      phone && email ? await upgradeApiLeadToWhatsapp(orgId, email, phone) : null;
     if (!convo) {
-      convo = await getOrCreateConversation(channel, externalId, {
+      convo = await getOrCreateConversation(orgId, channel, externalId, {
         name: name || undefined,
         phone,
       });
@@ -177,8 +181,9 @@ export async function GET(req: NextRequest) {
     if (!key) return unauthorized();
 
     // Campos públicos SOLAMENTE: el valor del negocio y el vendedor asignado
-    // son datos internos del CRM y no salen por la API.
-    const leads = (await listConversations()).slice(0, 500).map((c) => ({
+    // son datos internos del CRM y no salen por la API. Solo los leads de la
+    // organización dueña de la clave.
+    const leads = (await listConversations(key.org_id)).slice(0, 500).map((c) => ({
       id: c.id,
       name: c.name,
       phone: c.phone,
