@@ -491,9 +491,12 @@ create table if not exists channel_settings (
 );
 
 -- Baileys queda habilitado por defecto (compatibilidad con lo ya montado).
+-- Sin ON CONFLICT: la clave primaria cambia a (org_id, channel) en la
+-- sección multi-organización y "on conflict (channel)" rompería la
+-- re-ejecución (42P10).
 insert into channel_settings (channel, enabled)
-values ('whatsapp', true)
-on conflict (channel) do nothing;
+select 'whatsapp', true
+where not exists (select 1 from channel_settings where channel = 'whatsapp');
 
 -- insert_human_message: el outbox hereda canal y destinatario reales.
 create or replace function insert_human_message(
