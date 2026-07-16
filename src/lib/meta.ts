@@ -141,23 +141,40 @@ export async function sendChannelText(
 
 // ── Webhook ─────────────────────────────────────────────────
 
-// Valida X-Hub-Signature-256 con el app_secret configurado. Si no hay
-// app_secret guardado, se acepta (recomendado configurarlo en producción).
+// Valida X-Hub-Signature-256 contra el app_secret configurado — y, si está
+// configurado, también contra el "Secreto de la app de Instagram"
+// (ig_app_secret): la API nueva de Instagram (inicio de sesión de Instagram)
+// firma sus webhooks con SU secreto, distinto del de la app de Facebook.
+// Si no hay ningún secreto guardado, se acepta (recomendado configurarlos
+// en producción).
 export async function verifyMetaSignature(
   rawBody: string,
   signatureHeader: string | null
 ): Promise<boolean> {
   const rows = await getChannelSettingsCached();
-  const appSecret = rows["meta_webhook"]?.config?.app_secret;
-  if (!appSecret) return true;
+  const secrets = [
+    rows["meta_webhook"]?.config?.app_secret,
+    rows["meta_webhook"]?.config?.ig_app_secret,
+  ].filter((s): s is string => !!s);
+  if (secrets.length === 0) return true;
   if (!signatureHeader?.startsWith("sha256=")) return false;
-  const expected = crypto.createHmac("sha256", appSecret).update(rawBody, "utf8").digest("hex");
   const received = signatureHeader.slice("sha256=".length);
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received, "hex"));
-  } catch {
-    return false;
+  for (const secret of secrets) {
+    const expected = crypto.createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+    try {
+      if (timingSafeEqualHex(expected, received)) return true;
+    } catch {
+      /* firma malformada: probar el siguiente secreto */
+    }
   }
+  return false;
+}
+
+function timingSafeEqualHex(expected: string, received: string): boolean {
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(received, "hex");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 export async function getWebhookVerifyToken(): Promise<string | null> {

@@ -719,6 +719,20 @@ export default function ChannelSettings() {
                 className={inputClass}
               />
             </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-neutral-500">
+                App Secret de Instagram (opcional — apps nuevas con token IGAA…)
+              </label>
+              <input
+                type="password"
+                value={forms["meta_webhook"]?.ig_app_secret ?? ""}
+                onChange={(e) => setField("meta_webhook", "ig_app_secret", e.target.value)}
+                onFocus={selectAllOnFocus}
+                placeholder="del caso de uso de Instagram → Configuración"
+                autoComplete="off"
+                className={inputClass}
+              />
+            </div>
           </div>
 
           <button

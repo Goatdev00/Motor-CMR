@@ -20,7 +20,14 @@ const SETTING_KEYS = [
 
 // Campos secretos: al leer se enmascaran (••••XXXX); al guardar, un valor
 // enmascarado significa "no lo cambies".
-const SECRET_FIELDS = new Set(["page_access_token", "access_token", "app_secret", "password", "api_key"]);
+const SECRET_FIELDS = new Set([
+  "page_access_token",
+  "access_token",
+  "app_secret",
+  "ig_app_secret",
+  "password",
+  "api_key",
+]);
 const MASK_PREFIX = "••••";
 
 // Secretos de ≤4 caracteres: máscara sin sufijo (si no, se devolverían enteros).
