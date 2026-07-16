@@ -206,12 +206,30 @@ export async function testChannel(
   try {
     if (channel === "messenger" || channel === "instagram") {
       const token = requireConfig(rows, channel, "page_access_token");
-      const body = (await graphFetch(
-        `${GRAPH}/me?access_token=${encodeURIComponent(token)}`,
-        {},
-        "test"
-      )) as { name?: string; id?: string };
-      return { ok: true, detail: `Conectado como "${body.name ?? body.id}"` };
+      try {
+        const body = (await graphFetch(
+          `${GRAPH}/me?access_token=${encodeURIComponent(token)}`,
+          {},
+          "test"
+        )) as { name?: string; id?: string };
+        return { ok: true, detail: `Conectado como "${body.name ?? body.id}"` };
+      } catch {
+        // Leer la página (GET /me) exige pages_read_engagement o funciones
+        // que pasan por revisión de Meta — pero el bot NO lee la página:
+        // envía mensajes (pages_messaging). Los tokens generados desde los
+        // "casos de uso" nuevos suelen traer solo lo de mensajería, así que
+        // se valida contra el endpoint de mensajería antes de dar error.
+        await graphFetch(
+          `${GRAPH}/me/messenger_profile?access_token=${encodeURIComponent(token)}`,
+          {},
+          "test"
+        );
+        return {
+          ok: true,
+          detail:
+            "Token válido para mensajería. (No permite leer el nombre de la página — falta pages_read_engagement — pero eso no afecta el envío ni la recepción de mensajes.)",
+        };
+      }
     }
     if (channel === "whatsapp_api") {
       const phoneNumberId = requireConfig(rows, "whatsapp_api", "phone_number_id");
