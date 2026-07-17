@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import CollapsibleCard from "./CollapsibleCard";
 
 interface SettingsRow {
   enabled: boolean;
@@ -60,7 +61,6 @@ const META_CARDS: {
   },
 ];
 
-const cardClass = "rounded-xl border border-neutral-800 bg-neutral-900 p-4";
 const inputClass =
   "w-full rounded-lg border border-neutral-700 bg-neutral-950 px-2.5 py-1.5 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-emerald-600";
 const btnPrimary =
@@ -172,15 +172,20 @@ function ApiKeysCard() {
   };
 
   return (
-    <div className={`${cardClass} md:col-span-2`}>
-      <h2 className="text-sm font-semibold text-neutral-100">API del CRM (conectar otras apps)</h2>
-      <p className="mt-1 text-xs text-neutral-400">
-        Conecta tu CRM a otras aplicaciones — por ejemplo, una landing o app que recoge leads
-        puede <strong>crearlos aquí directamente</strong>. Genera una clave (solo Admin), pégala
-        en tu otra app como header <code className="font-mono">X-API-Key</code> y usa el
-        endpoint. Con teléfono, el lead nace en WhatsApp y dispara el enrutamiento del equipo.
-      </p>
-
+    <CollapsibleCard
+      title="API del CRM (conectar otras apps)"
+      completed={Boolean(keys?.some((k) => k.active))}
+      ready={keys !== null}
+      className="md:col-span-2"
+      description={
+        <>
+          Conecta tu CRM a otras aplicaciones — por ejemplo, una landing o app que recoge leads
+          puede <strong>crearlos aquí directamente</strong>. Genera una clave (solo Admin), pégala
+          en tu otra app como header <code className="font-mono">X-API-Key</code> y usa el
+          endpoint. Con teléfono, el lead nace en WhatsApp y dispara el enrutamiento del equipo.
+        </>
+      }
+    >
       {/* Claves existentes */}
       <div className="mt-3 space-y-1.5">
         {(keys ?? []).map((k) => (
@@ -271,7 +276,7 @@ function ApiKeysCard() {
       </div>
 
       {error && <p className="mt-2 rounded-lg bg-red-950 p-2 text-xs text-red-400">{error}</p>}
-    </div>
+    </CollapsibleCard>
   );
 }
 
@@ -459,23 +464,24 @@ export default function ChannelSettings() {
         )}
 
         {/* WhatsApp por QR (Baileys) — interruptor maestro del canal */}
-        <div className={cardClass}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-neutral-100">WhatsApp (QR / Baileys)</h2>
-              <p className="mt-1 text-xs text-neutral-400">
-                Interruptor maestro del canal: apagarlo detiene TODAS las sesiones por QR. Las
-                cuentas (vincular, QR, desvincular) se gestionan en la pestaña{" "}
-                <strong>Equipo</strong>. No oficial: para producción seria considera la API.
-              </p>
-            </div>
+        <CollapsibleCard
+          title="WhatsApp (QR / Baileys)"
+          completed={baileys?.enabled ?? true}
+          description={
+            <>
+              Interruptor maestro del canal: apagarlo detiene TODAS las sesiones por QR. Las
+              cuentas (vincular, QR, desvincular) se gestionan en la pestaña{" "}
+              <strong>Equipo</strong>. No oficial: para producción seria considera la API.
+            </>
+          }
+          headerRight={
             <Toggle
               on={baileys?.enabled ?? true}
               onChange={(v) => toggleEnabled("whatsapp", v)}
               disabled={busy !== null}
             />
-          </div>
-        </div>
+          }
+        />
 
         {/* Proveedor de IA (el cerebro de las respuestas) */}
         {(() => {
@@ -501,26 +507,25 @@ export default function ChannelSettings() {
           const meta = providerMeta[provider] ?? providerMeta.openai;
           const result = testResult["llm"];
           return (
-            <div className={cardClass}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-semibold text-neutral-100">
-                    Inteligencia artificial (IA)
-                  </h2>
-                  <p className="mt-1 text-xs text-neutral-400">
-                    El cerebro de las respuestas del bot, el análisis de leads y los
-                    generadores. Elige el proveedor y pega su clave.{" "}
-                    <strong>Apagado</strong> = se usa la clave OPENAI_API_KEY del archivo
-                    .env.local del servidor (como hasta ahora).
-                  </p>
-                </div>
+            <CollapsibleCard
+              title="Inteligencia artificial (IA)"
+              completed={(row?.enabled ?? false) || Boolean(row?.config?.api_key)}
+              description={
+                <>
+                  El cerebro de las respuestas del bot, el análisis de leads y los
+                  generadores. Elige el proveedor y pega su clave.{" "}
+                  <strong>Apagado</strong> = se usa la clave OPENAI_API_KEY del archivo
+                  .env.local del servidor (como hasta ahora).
+                </>
+              }
+              headerRight={
                 <Toggle
                   on={row?.enabled ?? false}
                   onChange={(v) => toggleEnabled("llm", v)}
                   disabled={busy !== null}
                 />
-              </div>
-
+              }
+            >
               <div className="mt-3 space-y-2">
                 <div>
                   <label className="mb-1 block text-[11px] font-medium text-neutral-500">
@@ -590,7 +595,7 @@ export default function ChannelSettings() {
                   {result.detail}
                 </p>
               )}
-            </div>
+            </CollapsibleCard>
           );
         })()}
 
@@ -598,20 +603,24 @@ export default function ChannelSettings() {
         {META_CARDS.map((card) => {
           const row = settings[card.channel];
           const result = testResult[card.channel];
+          // Configurado = el canal está encendido, o su token ya quedó guardado.
+          const secretKey = card.fields.find((f) => f.secret)?.key;
+          const completed =
+            (row?.enabled ?? false) || Boolean(secretKey && row?.config?.[secretKey]);
           return (
-            <div key={card.channel} className={cardClass}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-semibold text-neutral-100">{card.title}</h2>
-                  <p className="mt-1 text-xs text-neutral-400">{card.description}</p>
-                </div>
+            <CollapsibleCard
+              key={card.channel}
+              title={card.title}
+              completed={completed}
+              description={card.description}
+              headerRight={
                 <Toggle
                   on={row?.enabled ?? false}
                   onChange={(v) => toggleEnabled(card.channel, v)}
                   disabled={busy !== null}
                 />
-              </div>
-
+              }
+            >
               <div className="mt-3 space-y-2">
                 {card.fields.map((f) => (
                   <div key={f.key}>
@@ -657,7 +666,7 @@ export default function ChannelSettings() {
                   {result.detail}
                 </p>
               )}
-            </div>
+            </CollapsibleCard>
           );
         })}
 
@@ -665,17 +674,21 @@ export default function ChannelSettings() {
         <ApiKeysCard />
 
         {/* Webhook compartido de Meta */}
-        <div className={`${cardClass} md:col-span-2`}>
-          <h2 className="text-sm font-semibold text-neutral-100">Webhook de Meta (compartido)</h2>
-          <p className="mt-1 text-xs text-neutral-400">
-            Meta envía los mensajes entrantes a esta URL. Debe ser <strong>pública HTTPS</strong>:
-            en local usa un túnel (p.ej. <code className="font-mono">cloudflared tunnel --url http://localhost:3000</code>)
-            y registra la URL resultante + <code className="font-mono">/api/webhooks/meta</code> en
-            tu app de Meta (developers.facebook.com → Webhooks), suscribiendo el campo
-            <code className="font-mono"> messages</code> en los objetos Page, Instagram y WhatsApp
-            Business Account.
-          </p>
-
+        <CollapsibleCard
+          title="Webhook de Meta (compartido)"
+          completed={Boolean(settings["meta_webhook"]?.config?.verify_token)}
+          className="md:col-span-2"
+          description={
+            <>
+              Meta envía los mensajes entrantes a esta URL. Debe ser <strong>pública HTTPS</strong>:
+              en local usa un túnel (p.ej. <code className="font-mono">cloudflared tunnel --url http://localhost:3000</code>)
+              y registra la URL resultante + <code className="font-mono">/api/webhooks/meta</code> en
+              tu app de Meta (developers.facebook.com → Webhooks), suscribiendo el campo
+              <code className="font-mono"> messages</code> en los objetos Page, Instagram y WhatsApp
+              Business Account.
+            </>
+          }
+        >
           <div className="mt-3 grid gap-2 md:grid-cols-2">
             <div className="md:col-span-2">
               <label className="mb-1 block text-[11px] font-medium text-neutral-500">
@@ -752,7 +765,7 @@ export default function ChannelSettings() {
           >
             {busy === "meta_webhook" ? "Guardando..." : "Guardar webhook"}
           </button>
-        </div>
+        </CollapsibleCard>
       </div>
     </main>
   );

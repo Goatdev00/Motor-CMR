@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { LEAD_STAGES, type LeadStage } from "@/lib/db";
 import { DEFAULT_STAGE_CONFIG, type StageConfigMap } from "@/lib/stages";
+import CollapsibleCard from "./CollapsibleCard";
 
 const cardClass = "rounded-xl border border-neutral-800 bg-neutral-900 p-4";
 const inputClass =
@@ -51,6 +52,9 @@ export default function MailingPanel() {
   // ── Cuenta ──
   const [enabled, setEnabled] = useState(false);
   const [account, setAccount] = useState<Record<string, string>>({});
+  // Marca la primera carga: la tarjeta decide su estado contraído/expandido
+  // inicial solo cuando ya se sabe si la cuenta está configurada.
+  const [accountLoaded, setAccountLoaded] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; detail: string } | null>(null);
 
@@ -84,6 +88,7 @@ export default function MailingPanel() {
       setError(null);
       setEnabled(data.settings?.["email"]?.enabled ?? false);
       setAccount({ ...(data.settings?.["email"]?.config ?? {}) });
+      setAccountLoaded(true);
     } catch {
       setError("No se pudo cargar la configuración");
     }
@@ -232,16 +237,18 @@ export default function MailingPanel() {
         )}
 
         {/* ── Cuenta de correo ── */}
-        <div className={cardClass}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-neutral-100">Cuenta de correo (SMTP)</h2>
-              <p className="mt-1 text-xs text-neutral-400">
-                Gmail (con contraseña de aplicación), Resend (para enviar desde tu propio
-                dominio) o cualquier SMTP. Los límites son opcionales: si los dejas vacíos, no
-                se aplica ninguno. El paso a paso está en Configuración → Guía de conexión.
-              </p>
-            </div>
+        <CollapsibleCard
+          title="Cuenta de correo (SMTP)"
+          completed={enabled || Boolean(account.host?.trim() && account.user?.trim() && account.password)}
+          ready={accountLoaded}
+          description={
+            <>
+              Gmail (con contraseña de aplicación), Resend (para enviar desde tu propio
+              dominio) o cualquier SMTP. Los límites son opcionales: si los dejas vacíos, no
+              se aplica ninguno. El paso a paso está en Configuración → Guía de conexión.
+            </>
+          }
+          headerRight={
             <button
               role="switch"
               aria-checked={enabled}
@@ -260,8 +267,8 @@ export default function MailingPanel() {
                 }`}
               />
             </button>
-          </div>
-
+          }
+        >
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="text-[11px] font-medium text-neutral-500">Rellenar para:</span>
             <button
@@ -315,7 +322,7 @@ export default function MailingPanel() {
               {testResult.detail}
             </p>
           )}
-        </div>
+        </CollapsibleCard>
 
         {/* ── Redactar ── */}
         <div className={cardClass}>
