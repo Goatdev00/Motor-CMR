@@ -68,6 +68,11 @@ export default function MailingPanel() {
   const [isHtml, setIsHtml] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // Generador con IA: frase corta de qué decir + estado de carga/error. Si ya
+  // hay asunto/contenido escritos, van como borrador y la IA los mejora.
+  const [genInstr, setGenInstr] = useState("");
+  const [genBusy, setGenBusy] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
 
   // ── Estado ──
   const [status, setStatus] = useState<StatusPayload | null>(null);
@@ -181,6 +186,40 @@ export default function MailingPanel() {
     }
   };
 
+  const generateEmail = async () => {
+    setGenBusy(true);
+    setGenError(null);
+    try {
+      const res = await fetch("/api/leads-hub/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: "email",
+          instruction: genInstr,
+          draft: { subject, body: bodyText },
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        subject?: string;
+        body?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || !data?.body) {
+        setGenError(data?.error ?? "No se pudo generar el correo");
+        return;
+      }
+      if (data.subject) setSubject(data.subject);
+      setBodyText(data.body);
+      // El texto generado es texto plano: se envía convertido a HTML solo.
+      setIsHtml(false);
+      setSendResult(null);
+    } catch {
+      setGenError("Error de red al generar");
+    } finally {
+      setGenBusy(false);
+    }
+  };
+
   const send = async () => {
     setSending(true);
     setSendResult(null);
@@ -236,95 +275,7 @@ export default function MailingPanel() {
           <p className="rounded-lg bg-red-950 p-3 text-sm text-red-400 lg:col-span-2">{error}</p>
         )}
 
-        {/* ── Cuenta de correo ── */}
-        <CollapsibleCard
-          title="Cuenta de correo (SMTP)"
-          completed={enabled || Boolean(account.host?.trim() && account.user?.trim() && account.password)}
-          ready={accountLoaded}
-          description={
-            <>
-              Gmail (con contraseña de aplicación), Resend (para enviar desde tu propio
-              dominio) o cualquier SMTP. Los límites son opcionales: si los dejas vacíos, no
-              se aplica ninguno. El paso a paso está en Configuración → Guía de conexión.
-            </>
-          }
-          headerRight={
-            <button
-              role="switch"
-              aria-checked={enabled}
-              disabled={accountBusy}
-              onClick={() => {
-                setEnabled(!enabled);
-                saveAccount(!enabled);
-              }}
-              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-                enabled ? "bg-emerald-600" : "bg-neutral-700"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
-                  enabled ? "left-[22px]" : "left-0.5"
-                }`}
-              />
-            </button>
-          }
-        >
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-medium text-neutral-500">Rellenar para:</span>
-            <button
-              onClick={() => applyPreset("gmail")}
-              disabled={accountBusy}
-              className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-            >
-              Gmail
-            </button>
-            <button
-              onClick={() => applyPreset("resend")}
-              disabled={accountBusy}
-              title="Envía desde tu propio dominio (p.ej. hola@motoradvertising.co). Solo te falta pegar el API key y el correo remitente."
-              className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-            >
-              Resend (tu dominio)
-            </button>
-          </div>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {ACCOUNT_FIELDS.map((f) => (
-              <div key={f.key} className={f.key === "host" || f.key === "user" ? "sm:col-span-2" : ""}>
-                <label className={labelClass}>{f.label}</label>
-                <input
-                  type={f.secret ? "password" : "text"}
-                  value={account[f.key] ?? ""}
-                  onChange={(e) => setAccount((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                  placeholder={f.placeholder}
-                  autoComplete="off"
-                  className={inputClass}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-3 flex items-center gap-2">
-            <button onClick={() => saveAccount(enabled)} disabled={accountBusy} className={btnPrimary}>
-              {accountBusy ? "..." : "Guardar cuenta"}
-            </button>
-            <button onClick={testAccount} disabled={accountBusy} className={btnGhost}>
-              Probar conexión
-            </button>
-          </div>
-          {testResult && (
-            <p
-              className={`mt-2 rounded-lg p-2 text-xs ${
-                testResult.ok ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"
-              }`}
-            >
-              {testResult.ok ? "✓ " : "✕ "}
-              {testResult.detail}
-            </p>
-          )}
-        </CollapsibleCard>
-
-        {/* ── Redactar ── */}
+        {/* ── Redactar (izquierda) ── */}
         <div className={cardClass}>
           <h2 className="text-sm font-semibold text-neutral-100">Redactar</h2>
           <p className="mt-1 text-xs text-neutral-400">
@@ -423,6 +374,30 @@ export default function MailingPanel() {
                 className={`${inputClass} font-mono text-xs`}
               />
             </div>
+
+            {/* Generador con IA: redacta un correo profesional desde una frase,
+                o mejora lo ya escrito (asunto + contenido van como borrador). */}
+            <div className="flex gap-2">
+              <input
+                value={genInstr}
+                onChange={(e) => setGenInstr(e.target.value)}
+                maxLength={600}
+                placeholder="¿Qué quieres decir? (p.ej. «presentar nuestros planes de pauta y agendar una llamada»)"
+                className={`${inputClass} text-xs`}
+              />
+              <button
+                onClick={generateEmail}
+                disabled={genBusy || sending || (!genInstr.trim() && !bodyText.trim() && !subject.trim())}
+                title="La IA redacta un correo profesional y completo. Si ya escribiste algo, lo usa como base y lo mejora."
+                className="shrink-0 rounded-lg border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {genBusy ? "Generando..." : "✨ Generar con IA"}
+              </button>
+            </div>
+            {genError && (
+              <p className="rounded-lg bg-red-950 p-2 text-xs text-red-400">{genError}</p>
+            )}
+
             <label className="flex items-center gap-2 text-xs text-neutral-400">
               <input
                 type="checkbox"
@@ -447,6 +422,94 @@ export default function MailingPanel() {
             )}
           </div>
         </div>
+
+        {/* ── Cuenta de correo (derecha) ── */}
+        <CollapsibleCard
+          title="Cuenta de correo (SMTP)"
+          completed={enabled || Boolean(account.host?.trim() && account.user?.trim() && account.password)}
+          ready={accountLoaded}
+          description={
+            <>
+              Gmail (con contraseña de aplicación), Resend (para enviar desde tu propio
+              dominio) o cualquier SMTP. Los límites son opcionales: si los dejas vacíos, no
+              se aplica ninguno. El paso a paso está en Configuración → Guía de conexión.
+            </>
+          }
+          headerRight={
+            <button
+              role="switch"
+              aria-checked={enabled}
+              disabled={accountBusy}
+              onClick={() => {
+                setEnabled(!enabled);
+                saveAccount(!enabled);
+              }}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                enabled ? "bg-emerald-600" : "bg-neutral-700"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
+                  enabled ? "left-[22px]" : "left-0.5"
+                }`}
+              />
+            </button>
+          }
+        >
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium text-neutral-500">Rellenar para:</span>
+            <button
+              onClick={() => applyPreset("gmail")}
+              disabled={accountBusy}
+              className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            >
+              Gmail
+            </button>
+            <button
+              onClick={() => applyPreset("resend")}
+              disabled={accountBusy}
+              title="Envía desde tu propio dominio (p.ej. hola@motoradvertising.co). Solo te falta pegar el API key y el correo remitente."
+              className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            >
+              Resend (tu dominio)
+            </button>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {ACCOUNT_FIELDS.map((f) => (
+              <div key={f.key} className={f.key === "host" || f.key === "user" ? "sm:col-span-2" : ""}>
+                <label className={labelClass}>{f.label}</label>
+                <input
+                  type={f.secret ? "password" : "text"}
+                  value={account[f.key] ?? ""}
+                  onChange={(e) => setAccount((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                  placeholder={f.placeholder}
+                  autoComplete="off"
+                  className={inputClass}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 flex items-center gap-2">
+            <button onClick={() => saveAccount(enabled)} disabled={accountBusy} className={btnPrimary}>
+              {accountBusy ? "..." : "Guardar cuenta"}
+            </button>
+            <button onClick={testAccount} disabled={accountBusy} className={btnGhost}>
+              Probar conexión
+            </button>
+          </div>
+          {testResult && (
+            <p
+              className={`mt-2 rounded-lg p-2 text-xs ${
+                testResult.ok ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"
+              }`}
+            >
+              {testResult.ok ? "✓ " : "✕ "}
+              {testResult.detail}
+            </p>
+          )}
+        </CollapsibleCard>
 
         {/* ── Estado de la cola ── */}
         <div className={`${cardClass} lg:col-span-2`}>

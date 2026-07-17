@@ -49,13 +49,21 @@ export default function CollapsibleCard({
           className="min-w-0 flex-1 text-left"
         >
           <h2 className="flex flex-wrap items-center gap-2 text-sm font-semibold text-neutral-100">
-            <span
-              className={`inline-block text-[10px] text-neutral-500 transition-transform ${
+            {/* Chevron minimal (línea fina gris), gira hacia abajo al expandir. */}
+            <svg
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={`h-3 w-3 shrink-0 text-neutral-600 transition-transform ${
                 open ? "rotate-90" : ""
               }`}
             >
-              ▶
-            </span>
+              <path d="M6 4l4 4-4 4" />
+            </svg>
             {title}
             {completed && (
               <span className="rounded bg-emerald-950 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400">

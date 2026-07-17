@@ -30,6 +30,9 @@ interface GenBody {
   channel?: string;
   instruction?: string;
   leadId?: number;
+  // Borrador ya escrito por el operador (Mailing → Redactar): la IA lo usa
+  // como base, le conserva la intención y lo mejora/completa.
+  draft?: { subject?: string; body?: string };
 }
 
 export async function POST(req: NextRequest) {
@@ -43,12 +46,28 @@ export async function POST(req: NextRequest) {
     if (!GEN_CHANNELS.includes(channel)) {
       return NextResponse.json({ error: "channel inválido" }, { status: 400 });
     }
-    const instruction = body?.instruction?.trim().slice(0, 1000) ?? "";
-    if (!instruction) {
+    let instruction = body?.instruction?.trim().slice(0, 1000) ?? "";
+    const draftSubject =
+      typeof body?.draft?.subject === "string" ? body.draft.subject.trim().slice(0, 300) : "";
+    const draftBody =
+      typeof body?.draft?.body === "string" ? body.draft.body.trim().slice(0, 6000) : "";
+    if (!instruction && !draftSubject && !draftBody) {
       return NextResponse.json(
         { error: "Describe qué quieres decir (instrucción para la IA)" },
         { status: 400 }
       );
+    }
+    // Con borrador y sin instrucción, el pedido implícito es "mejóralo".
+    if (!instruction) {
+      instruction =
+        "Mejora el borrador: hazlo más profesional, completo y persuasivo, conservando su intención.";
+    }
+    let draftContext = "";
+    if (draftSubject || draftBody) {
+      draftContext =
+        "\n\nBorrador actual (úsalo como base: consérvale la intención y mejóralo):" +
+        (draftSubject ? `\nAsunto: ${draftSubject}` : "") +
+        (draftBody ? `\nCuerpo:\n${draftBody}` : "");
     }
 
     // Contexto del lead (opcional): campos del CRM + últimas notas.
@@ -81,7 +100,7 @@ export async function POST(req: NextRequest) {
       model,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `${instruction}${leadContext}` },
+        { role: "user", content: `${instruction}${draftContext}${leadContext}` },
       ],
       ...maxTokensParam(provider, 900),
       // La capa compatible de Anthropic no soporta response_format; el
