@@ -1451,3 +1451,31 @@ $$;
 
 revoke execute on function list_conversations(bigint) from public, anon, authenticated;
 grant execute on function list_conversations(bigint) to service_role;
+
+-- ============================================================
+-- CORREO ENTRANTE (bandeja info@ dentro del CRM)
+-- Aditivo e idempotente. Los correos que llegan al dominio (vía
+-- Resend Inbound → webhook /api/webhooks/email) se guardan aquí
+-- enlazados a su lead, y el hilo del CRM los muestra como
+-- mensajes recibidos.
+-- ============================================================
+
+create table if not exists email_inbound (
+  id               bigint generated always as identity primary key,
+  org_id           bigint not null default 1 references organizations(id),
+  conversation_id  bigint not null references conversations(id) on delete cascade,
+  -- Id del mensaje en el proveedor (dedupe: los webhooks se reintentan).
+  message_id       text not null,
+  from_email       text not null,
+  from_name        text,
+  to_email         text not null,
+  subject          text not null default '',
+  body_text        text not null default '',
+  body_html        text,
+  created_at       bigint not null default extract(epoch from now())::bigint
+);
+
+create unique index if not exists idx_email_inbound_org_msg
+  on email_inbound (org_id, message_id);
+create index if not exists idx_email_inbound_conv
+  on email_inbound (conversation_id, created_at);

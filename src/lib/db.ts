@@ -1504,6 +1504,67 @@ export async function listLeadEmails(
   return (data ?? []) as LeadEmailRow[];
 }
 
+// ── Correo entrante (bandeja info@ del CRM) ─────────────────
+// Los correos que llegan al dominio (Resend Inbound → webhook) se guardan
+// aquí enlazados a su lead; el hilo del CRM los muestra como recibidos.
+
+export interface InboundEmailRow {
+  id: number;
+  org_id: number;
+  conversation_id: number;
+  message_id: string;
+  from_email: string;
+  from_name: string | null;
+  to_email: string;
+  subject: string;
+  body_text: string;
+  body_html: string | null;
+  created_at: number;
+}
+
+// Inserta con dedupe por (org, message_id): los webhooks se reintentan y no
+// deben duplicar el hilo. Devuelve null si el mensaje ya estaba guardado.
+export async function insertInboundEmail(
+  row: Omit<InboundEmailRow, "id" | "created_at">
+): Promise<InboundEmailRow | null> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("email_inbound")
+    .upsert(row, { onConflict: "org_id,message_id", ignoreDuplicates: true })
+    .select()
+    .maybeSingle();
+  if (error) fail("insert inbound email", error.message);
+  return (data as InboundEmailRow | null) ?? null;
+}
+
+export async function listInboundEmails(
+  conversationId: number,
+  limit = 200
+): Promise<InboundEmailRow[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("email_inbound")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(limit);
+  if (error) fail("list inbound emails", error.message);
+  return (data ?? []) as InboundEmailRow[];
+}
+
+// Un correo entrante es actividad del lead: sube el hilo en la lista de
+// conversaciones y lo deja "esperando respuesta" (last_user_message_at).
+export async function touchConversationInbound(conversationId: number): Promise<void> {
+  const sb = getSupabase();
+  const now = epoch();
+  const { error } = await sb
+    .from("conversations")
+    .update({ last_message_at: now, last_user_message_at: now })
+    .eq("id", conversationId);
+  if (error) fail("touch conversation inbound", error.message);
+}
+
 // ── Claves de la API pública del CRM ────────────────────────
 
 export interface ApiKeyRow {

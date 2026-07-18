@@ -724,7 +724,7 @@
       <div class="channel-num">7</div>
       <div>
         <h2>Correo electrónico — Gmail o su propio dominio (Resend)</h2>
-        <p class="lead">Habilita los envíos de correo: campañas desde <b>Mailing</b>, contactos individuales o masivos desde <b>Leads</b> y alarmas por email. Hay dos caminos: <b>Opción A</b>, enviar desde una cuenta Gmail/Outlook que ya tenga (lo más rápido), u <b>Opción B</b>, enviar desde su propio dominio con Resend (p. ej. <code>hola@su-empresa.co</code> — se ve más profesional y llega mejor a la bandeja de entrada). No requiere la app de Meta.</p>
+        <p class="lead">Habilita el correo completo: envíos (campañas desde <b>Mailing</b>, contactos desde <b>Leads</b>, alarmas) y, si quiere, recepción con su dominio. Para ENVIAR hay dos opciones: <b>Opción A</b>, desde una cuenta Gmail/Outlook que ya tenga (lo más rápido), u <b>Opción B</b>, desde su propio dominio con Resend (p. ej. <code>info@su-empresa.co</code> — más profesional y llega mejor a la bandeja de entrada). Para RECIBIR, los pasos 6 a 12 (dos caminos: al CRM o a su Gmail). No requiere la app de Meta.</p>
       </div>
     </div>
 
@@ -786,11 +786,44 @@
     </div>
 
     <div class="warn">
-      <strong>Resend solo ENVÍA — los pasos 6 a 9 activan la recepción (gratis)</strong>
-      Resend no le da una bandeja de entrada: si alguien escribe directamente a <code>hola@su-empresa.co</code> (sin ser respuesta a un correo suyo), ese mensaje se pierde. La solución gratis es <b>Email Routing de Cloudflare</b>: todo lo que llegue a su dominio se reenvía a su Gmail de siempre. Es opcional, pero muy recomendado si eligió la Opción B. (La alternativa de pago es Google Workspace, ~US$6/usuario/mes, que da un buzón Gmail real con su dominio — en ese caso no siga estos pasos.)
+      <strong>Para RECIBIR correos hay que elegir un camino (el registro MX solo puede tenerlo uno)</strong>
+      Enviar ya quedó listo; para que los correos que le escriban a <code>info@su-empresa.co</code> lleguen a algún lado hay dos caminos y <b>solo uno puede estar activo a la vez</b>: <b>Camino A (recomendado) — Resend Inbound, pasos 6 a 8:</b> cada correo entra directo al CRM como conversación del lead (con el remitente creado o encontrado automáticamente), y opcionalmente le llega una copia a su Gmail. <b>Camino B — Cloudflare Email Routing, pasos 9 a 12:</b> los correos solo se reenvían a su Gmail; el CRM no los ve. (La alternativa de pago sigue siendo Google Workspace, ~US$6/usuario/mes, con buzón Gmail real del dominio.)
     </div>
 
     <ol class="steps" style="counter-reset: step 5">
+      <li>
+        <h3>Camino A — Active la recepción del dominio en Resend</h3>
+        <ul>
+          <li>En <a class="ext" href="https://resend.com">resend.com</a> → <b>Domains</b> → su dominio, busque la sección de <b>recepción</b> (Receiving / Inbound) y habilítela.</li>
+          <li>Resend le mostrará un <b>registro MX</b>: agréguelo en la zona DNS de su dominio (el mismo lugar de los registros del paso 2), con el tipo, nombre y prioridad exactos que indique Resend.</li>
+          <li>Si antes activó Email Routing de Cloudflare (Camino B), <b>desactívelo primero</b>: dos servicios no pueden recibir el correo del mismo dominio a la vez.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Camino A — Cree el webhook firmado hacia su dashboard</h3>
+        <ul>
+          <li>En Resend → <b>Webhooks</b> → <b>Add Endpoint</b>.</li>
+          <li><b>URL del endpoint:</b> la que muestra la pestaña <span class="kbd-path">Mailing</span> en la sección “Recepción” — es su dominio del dashboard + <code>/api/webhooks/email</code>. Debe ser <b>pública HTTPS</b> (igual que el webhook de Meta: túnel o dominio fijo).</li>
+          <li>Marque únicamente el evento <b><code>email.received</code></b> y cree el endpoint.</li>
+          <li>Copie el <b>Signing Secret</b> (empieza por <code>whsec_</code>): es la firma con la que el dashboard comprueba que cada correo viene de verdad de Resend y no de un impostor.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Camino A — Configure la pestaña Mailing y pruebe</h3>
+        <ul>
+          <li>En <span class="kbd-path">Mailing</span> → sección <b>“Recepción — bandeja del CRM”</b>: escriba la <b>dirección de recepción</b> (p. ej. <code>info@su-empresa.co</code> — la que publicará en su web y firmas), pegue el <b>Signing Secret</b>, y si quiere copia de cada entrante en su buzón de siempre, complete <b>“Reenviar copia a”</b>. Pulse <b>Guardar cuenta</b>.</li>
+          <li>Recomendado: use esa misma dirección como <b>Correo remitente</b> (arriba en la misma tarjeta) — así envía y recibe como <code>info@</code>, y las respuestas de los clientes vuelven solas al CRM.</li>
+          <li><b>Prueba real:</b> desde otro correo, escriba a <code>info@su-empresa.co</code>. En segundos debe aparecer en <span class="kbd-path">Leads / Chats</span> un lead con ese remitente y el correo como <b>“Recibido”</b> en su hilo; si configuró el reenvío, la copia llega a su Gmail (responderla le responde directo al cliente). Nota: cualquier dirección del dominio (<code>ventas@</code>, <code>juan@</code>…) también entra al CRM; los adjuntos no se muestran.</li>
+        </ul>
+      </li>
+    </ol>
+
+    <div class="tip">
+      <strong>Camino B — reenvío a Gmail con Cloudflare (pasos 9 a 12)</strong>
+      Si prefiere no meter los correos al CRM y solo leerlos en su Gmail, siga estos pasos en lugar de los anteriores.
+    </div>
+
+    <ol class="steps" style="counter-reset: step 8">
       <li>
         <h3>Ponga su dominio en Cloudflare (si aún no lo está)</h3>
         <ul>
@@ -798,7 +831,7 @@
           <li>Cloudflare escanea y copia solo sus registros DNS actuales (incluidos los que agregó para Resend). Revise que la lista se vea completa y continúe.</li>
           <li>Cloudflare le dará <b>dos servidores de nombres</b> (nameservers), p. ej. <code>ana.ns.cloudflare.com</code> y <code>bob.ns.cloudflare.com</code>. Vaya al sitio donde <b>compró</b> el dominio (GoDaddy, Namecheap, Hostinger…) → configuración del dominio → <b>Nameservers / Servidores de nombres</b> → reemplace los actuales por esos dos.</li>
           <li>El cambio tarda de minutos a 24 horas; Cloudflare le avisa por correo cuando el dominio quede <b>Active</b>. Su página web y los registros de Resend siguen funcionando: se copiaron tal cual.</li>
-          <li>Si su DNS ya estaba en Cloudflare, salte directo al paso 7.</li>
+          <li>Si su DNS ya estaba en Cloudflare, salte directo al paso 10.</li>
         </ul>
       </li>
       <li>
@@ -818,7 +851,7 @@
           <li>En Gmail (web): engranaje → <b>Ver todos los ajustes</b> → pestaña <b>Cuentas e importación</b> → “Enviar como” → <b>Añadir otra dirección de correo</b>.</li>
           <li>Nombre: el de su negocio · Dirección: <code>hola@su-empresa.co</code> · deje marcada la casilla “Tratar como un alias”.</li>
           <li>En la pantalla siguiente: Servidor SMTP <code>smtp.resend.com</code> · Puerto <code>465</code> (SSL) · Usuario <code>resend</code> · Contraseña: su API key de Resend (<code>re_…</code>).</li>
-          <li>Gmail envía un <b>código de confirmación</b> a <code>hola@su-empresa.co</code> — le llegará a su propio Gmail gracias al paso 7. Péguelo y listo: al redactar o responder podrá elegir el remitente del dominio (puede marcarlo como predeterminado).</li>
+          <li>Gmail envía un <b>código de confirmación</b> a <code>hola@su-empresa.co</code> — le llegará a su propio Gmail gracias al paso 10. Péguelo y listo: al redactar o responder podrá elegir el remitente del dominio (puede marcarlo como predeterminado).</li>
         </ul>
       </li>
       <li>
@@ -899,7 +932,8 @@
       <li>Messenger: “Probar conexión” muestra el nombre de la página y un mensaje de prueba llega a Chats.</li>
       <li>Instagram: un DM de prueba llega a Chats con la etiqueta Instagram.</li>
       <li>Correo: “Probar conexión” exitoso, interruptor encendido y un correo de prueba enviado desde Mailing o Leads.</li>
-      <li>Si usa dominio propio (Resend): dominio “Verified” en Resend y, con Email Routing activo, un correo externo a <code>hola@su-dominio</code> llegó reenviado a su Gmail.</li>
+      <li>Si usa dominio propio (Resend): dominio “Verified” en Resend.</li>
+      <li>Recepción: un correo externo a <code>info@su-dominio</code> apareció como “Recibido” en el hilo del lead del CRM (Camino A) o llegó reenviado a su Gmail (Camino B).</li>
       <li>“Responder a” predeterminado guardado en la sección Leads.</li>
       <li>API del CRM: clave generada, entregada al desarrollador y un lead de prueba creado.</li>
     </ul>
@@ -962,7 +996,11 @@
         <td>Los registros DNS de la sección 7 (paso 2) no están completos o aún no propagan. En resend.com → Domains, pulse “Verify DNS Records” y compare cada registro (tipo, nombre y valor exactos) con los de su proveedor de DNS. La propagación puede tardar hasta un par de horas.</td>
       </tr>
       <tr>
-        <td>Los correos enviados a su dominio no llegan a su Gmail.</td>
+        <td>Los correos a <code>info@</code> no aparecen en el CRM (Camino A).</td>
+        <td>Revise en orden: (1) la <b>recepción</b> del dominio está habilitada en Resend y el registro MX que Resend indica ya está en su DNS; (2) el webhook de Resend apunta a la URL exacta que muestra la pestaña Mailing (<code>/api/webhooks/email</code>, pública HTTPS) con el evento <code>email.received</code> marcado; (3) el <b>Signing Secret</b> pegado en Mailing es el de ESE webhook (si lo regeneró en Resend, péguelo de nuevo); (4) la migración está aplicada (re-ejecute <code>supabase/schema.sql</code>). El registro de entregas y reintentos se ve en Resend → Webhooks → su endpoint.</td>
+      </tr>
+      <tr>
+        <td>Los correos enviados a su dominio no llegan a su Gmail (Camino B).</td>
         <td>En Cloudflare → su dominio → Email Routing verifique: estado <b>Habilitado</b>, la dirección de destino <b>verificada</b> (correo de confirmación aceptado) y la regla o el catch-all apuntando a su Gmail. Revise también la carpeta Spam del Gmail de destino la primera vez.</td>
       </tr>
       <tr>

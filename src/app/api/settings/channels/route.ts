@@ -28,6 +28,8 @@ const SECRET_FIELDS = new Set([
   "ig_app_secret",
   "password",
   "api_key",
+  // Signing Secret del webhook de recepción de correo (Resend Inbound).
+  "inbound_secret",
 ]);
 const MASK_PREFIX = "••••";
 

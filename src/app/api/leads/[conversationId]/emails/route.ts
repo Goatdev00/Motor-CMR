@@ -1,14 +1,20 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getAllChannelSettings, getConversationById, listLeadEmails } from "@/lib/db";
+import {
+  getAllChannelSettings,
+  getConversationById,
+  listInboundEmails,
+  listLeadEmails,
+} from "@/lib/db";
 import { htmlToText } from "@/lib/mailer";
 import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-// Hilo de correos de un lead para la vista conversacional del CRM: todos los
-// correos que se le han enviado (o están en cola), con su estado. El cuerpo
-// llega como texto plano legible; el html crudo no se expone. Solo salientes:
-// la app aún no recibe correos entrantes (eso lo hace Cloudflare/Gmail).
+// Hilo de correos de un lead para la vista conversacional del CRM:
+// - Salientes: los de la cola de envíos (email_queue) a su dirección.
+// - Entrantes: los recibidos por el webhook de Resend Inbound (email_inbound).
+// Se devuelven fusionados en orden cronológico con su dirección ('in'/'out');
+// el cuerpo llega como texto plano legible (el html crudo no se expone).
 
 interface Ctx {
   params: Promise<{ conversationId: string }>;
@@ -46,25 +52,53 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     const accountReady = Boolean(
       emailCfg?.enabled && emailCfg.config?.host && emailCfg.config?.user
     );
+    // Recepción configurada = el hilo también muestra respuestas del cliente.
+    const inboundReady = Boolean(emailCfg?.config?.inbound_secret);
+    const inboundAddress = emailCfg?.config?.inbound_address?.trim() || null;
 
-    const emails = lead.email
+    const outbound = lead.email
       ? (await listLeadEmails(orgId, lead.email)).map((e) => ({
-          id: e.id,
+          key: `out-${e.id}`,
+          direction: "out" as const,
           subject: e.subject,
           body: htmlToText(e.html),
           status: STATUS[e.sent] ?? "pending",
           error: e.error,
           reply_to: e.reply_to ?? null,
+          from_name: null as string | null,
+          from_email: null as string | null,
           created_at: e.created_at,
           sent_at: e.sent_at,
         }))
       : [];
+
+    // Tabla email_inbound sin migrar → el hilo sigue funcionando solo con
+    // los salientes (el webhook ya avisa de la migración por su lado).
+    const inbound = (await listInboundEmails(id).catch(() => [])).map((e) => ({
+      key: `in-${e.id}`,
+      direction: "in" as const,
+      subject: e.subject,
+      body: e.body_text || (e.body_html ? htmlToText(e.body_html) : ""),
+      status: "received",
+      error: null as string | null,
+      reply_to: null as string | null,
+      from_name: e.from_name,
+      from_email: e.from_email,
+      created_at: e.created_at,
+      sent_at: null as number | null,
+    }));
+
+    const emails = [...outbound, ...inbound].sort(
+      (a, b) => a.created_at - b.created_at || (a.direction === "out" ? -1 : 1)
+    );
 
     return NextResponse.json({
       emails,
       leadEmail: lead.email ?? null,
       from: { name: fromName, email: fromEmail },
       accountReady,
+      inboundReady,
+      inboundAddress,
     });
   } catch (err) {
     return NextResponse.json(

@@ -21,6 +21,9 @@ const EVENT_LABELS: Record<string, string> = {
   followup_failed: "Seguimiento FALLIDO",
   handoff: "Derivado a humano",
   assigned: "Asignación",
+  import: "Importado",
+  email: "Correo enviado",
+  email_in: "Correo recibido",
 };
 
 // Acepta formatos locales ("2.500.000", "1,5", "$ 3000"). Devuelve null para

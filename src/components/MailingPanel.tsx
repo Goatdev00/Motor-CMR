@@ -42,6 +42,15 @@ const ACCOUNT_FIELDS: { key: string; label: string; placeholder: string; secret?
   { key: "max_per_day", label: "Límite por día (opcional, vacío = sin límite)", placeholder: "p.ej. 500" },
 ];
 
+// Recepción (Resend Inbound): lo que el cliente escriba a info@tudominio
+// entra al CRM como conversación. El Signing Secret sale del webhook creado
+// en Resend; el reenvío manda copia de cada entrante a tu buzón de siempre.
+const INBOUND_FIELDS: { key: string; label: string; placeholder: string; secret?: boolean }[] = [
+  { key: "inbound_address", label: "Dirección de recepción (la que publicas)", placeholder: "info@motoradvertising.co" },
+  { key: "inbound_secret", label: "Signing Secret del webhook de Resend", placeholder: "whsec_…", secret: true },
+  { key: "inbound_forward_to", label: "Reenviar copia de cada entrante a (opcional)", placeholder: "tucorreo@gmail.com" },
+];
+
 function statusChip(item: EmailItem) {
   if (item.sent === 1) return <span className="rounded bg-emerald-950 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400">Enviado</span>;
   if (item.sent === 2) return <span title={item.error ?? ""} className="rounded bg-red-950 px-1.5 py-0.5 text-[10px] font-semibold text-red-400">Fallido</span>;
@@ -55,6 +64,8 @@ export default function MailingPanel() {
   // Marca la primera carga: la tarjeta decide su estado contraído/expandido
   // inicial solo cuando ya se sabe si la cuenta está configurada.
   const [accountLoaded, setAccountLoaded] = useState(false);
+  // URL del webhook de recepción (window solo tras montar: evita mismatch).
+  const [inboundUrl, setInboundUrl] = useState("/api/webhooks/email");
   const [accountBusy, setAccountBusy] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; detail: string } | null>(null);
 
@@ -100,6 +111,7 @@ export default function MailingPanel() {
   };
 
   useEffect(() => {
+    setInboundUrl(`${window.location.origin}/api/webhooks/email`);
     loadAccount();
     fetch("/api/settings/stages", { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
@@ -493,6 +505,36 @@ export default function MailingPanel() {
                 />
               </div>
             ))}
+          </div>
+
+          {/* ── Recepción: bandeja info@ dentro del CRM ── */}
+          <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+            <p className="text-xs font-semibold text-neutral-200">
+              Recepción — bandeja del CRM (info@, opcional)
+            </p>
+            <p className="mt-1 text-[11px] text-neutral-500">
+              Con Resend Inbound, lo que el cliente escriba a tu dominio entra al CRM como
+              conversación del lead. Pasos en Configuración → Guía de conexión (sección Correo).
+              Registra esta URL como webhook en Resend (evento <code>email.received</code>):
+            </p>
+            <code className="mt-2 block truncate rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5 text-xs text-neutral-300">
+              {inboundUrl}
+            </code>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {INBOUND_FIELDS.map((f) => (
+                <div key={f.key} className={f.key === "inbound_secret" ? "sm:col-span-2" : ""}>
+                  <label className={labelClass}>{f.label}</label>
+                  <input
+                    type={f.secret ? "password" : "text"}
+                    value={account[f.key] ?? ""}
+                    onChange={(e) => setAccount((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                    placeholder={f.placeholder}
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="mt-3 flex items-center gap-2">

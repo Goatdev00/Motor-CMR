@@ -3,19 +3,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Vista conversacional de los correos de un lead (canal 'api' / leads de
-// correo). Muestra cada correo enviado como un globo a la derecha (el negocio
-// escribe al lead), con su estado en la cola, y un redactor para enviarle otro
-// correo sin salir de la conversación — con generador de IA incluido.
-// Solo salientes: la app aún no recibe correos entrantes (los recibe
-// Cloudflare/Gmail); por eso hay un aviso al pie.
+// correo). Los correos enviados van como globos a la derecha (con su estado
+// en la cola) y los RECIBIDOS — cuando la recepción con Resend Inbound está
+// configurada (guía §7) — como globos a la izquierda. Incluye redactor con
+// generador de IA para responder sin salir de la conversación.
 
 interface LeadEmail {
-  id: number;
+  key: string;
+  direction: "in" | "out";
   subject: string;
   body: string;
-  status: string; // sent | pending | sending | failed
+  status: string; // out: sent | pending | sending | failed · in: received
   error: string | null;
   reply_to: string | null;
+  from_name: string | null;
+  from_email: string | null;
   created_at: number;
   sent_at: number | null;
 }
@@ -25,6 +27,8 @@ interface ThreadData {
   leadEmail: string | null;
   from: { name: string | null; email: string | null };
   accountReady: boolean;
+  inboundReady: boolean;
+  inboundAddress: string | null;
 }
 
 interface Props {
@@ -61,7 +65,7 @@ export default function EmailThread({ conversationId, onSent }: Props) {
   const [genBusy, setGenBusy] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const lastIdRef = useRef<number | null>(null);
+  const lastIdRef = useRef<string | null>(null);
   // Descarta respuestas de una conversación ya deseleccionada (polling).
   const currentIdRef = useRef(conversationId);
   currentIdRef.current = conversationId;
@@ -93,9 +97,9 @@ export default function EmailThread({ conversationId, onSent }: Props) {
     return () => clearInterval(timer);
   }, [conversationId, refetch]);
 
-  // Auto-scroll al fondo cuando entra un correo nuevo.
+  // Auto-scroll al fondo cuando entra un correo nuevo (enviado o recibido).
   useEffect(() => {
-    const last = data?.emails[data.emails.length - 1]?.id ?? null;
+    const last = data?.emails[data.emails.length - 1]?.key ?? null;
     if (last !== null && last !== lastIdRef.current) {
       lastIdRef.current = last;
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -190,9 +194,34 @@ export default function EmailThread({ conversationId, onSent }: Props) {
           </p>
         )}
         {data.emails.map((e) => {
+          if (e.direction === "in") {
+            // Recibido: globo a la izquierda, estilo neutro (como habla el cliente).
+            return (
+              <div key={e.key} className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl border border-neutral-700 bg-neutral-800 px-3.5 py-2.5 shadow-sm">
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className="rounded bg-violet-950 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-300">
+                      Recibido
+                    </span>
+                    <span className="truncate text-[10px] text-neutral-500">
+                      {e.from_name ? `${e.from_name} · ` : ""}
+                      {e.from_email}
+                    </span>
+                  </div>
+                  <p className="text-sm font-semibold text-neutral-100">{e.subject || "(sin asunto)"}</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-neutral-300">
+                    {e.body}
+                  </p>
+                  <p className="mt-1.5 text-right text-[10px] text-neutral-500">
+                    {formatWhen(e.created_at)}
+                  </p>
+                </div>
+              </div>
+            );
+          }
           const chip = STATUS_CHIP[e.status] ?? STATUS_CHIP.pending;
           return (
-            <div key={e.id} className="flex justify-end">
+            <div key={e.key} className="flex justify-end">
               <div className="max-w-[85%] rounded-2xl border border-sky-900 bg-sky-950/50 px-3.5 py-2.5 shadow-sm">
                 <div className="mb-1 flex items-center gap-2">
                   <span className="rounded bg-sky-900/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
@@ -271,8 +300,18 @@ export default function EmailThread({ conversationId, onSent }: Props) {
         {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
         {okMsg && <p className="mt-1.5 text-xs text-emerald-400">{okMsg}</p>}
         <p className="mt-1.5 text-[10px] text-neutral-600">
-          Enviarás desde {fromLabel}. Las respuestas del cliente llegan a tu buzón (Reply-To), no
-          a esta vista.
+          {data.inboundReady ? (
+            <>
+              Enviarás desde {fromLabel}. Lo que el cliente escriba a{" "}
+              {data.inboundAddress ?? "tu dominio"} aparece aquí como “Recibido” (los adjuntos no
+              se muestran).
+            </>
+          ) : (
+            <>
+              Enviarás desde {fromLabel}. Las respuestas del cliente aún llegan solo a tu buzón —
+              activa la recepción en Mailing (guía §7) para verlas también aquí.
+            </>
+          )}
         </p>
       </div>
     </div>
