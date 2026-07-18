@@ -121,7 +121,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         typeof body.company === "string" && body.company.trim() ? body.company.trim() : null;
     }
     if (body.email !== undefined) {
-      patch.email = typeof body.email === "string" && body.email.trim() ? body.email.trim() : null;
+      // A minúsculas: la dirección es case-insensitive y así el correo
+      // entrante (que llega en minúsculas) siempre casa con el lead.
+      patch.email =
+        typeof body.email === "string" && body.email.trim()
+          ? body.email.trim().toLowerCase()
+          : null;
     }
     if (body.tags !== undefined) {
       patch.tags = Array.isArray(body.tags)

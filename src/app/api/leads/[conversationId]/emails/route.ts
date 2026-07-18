@@ -88,9 +88,17 @@ export async function GET(req: NextRequest, { params }: Ctx) {
       sent_at: null as number | null,
     }));
 
-    const emails = [...outbound, ...inbound].sort(
-      (a, b) => a.created_at - b.created_at || (a.direction === "out" ? -1 : 1)
-    );
+    // Orden cronológico. El desempate debe ser ANTISIMÉTRICO (cmp(a,b) ===
+    // -cmp(b,a)) o Array.sort se comporta indefinido y puede invertir grupos
+    // empatados: como created_at es epoch en SEGUNDOS, dos correos del mismo
+    // segundo empatan. Al empatar: primero los salientes, luego los entrantes;
+    // dentro de la misma dirección, por el id numérico del key (out-<id>/in-<id>).
+    const seq = (k: string) => Number(k.split("-")[1]) || 0;
+    const emails = [...outbound, ...inbound].sort((a, b) => {
+      if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+      if (a.direction !== b.direction) return a.direction === "out" ? -1 : 1;
+      return seq(a.key) - seq(b.key);
+    });
 
     return NextResponse.json({
       emails,

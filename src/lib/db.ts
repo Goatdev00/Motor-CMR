@@ -1413,14 +1413,20 @@ export async function upgradeApiLeadToWhatsapp(
 // 'mailing' para poder filtrarlo en la sección Leads.
 export async function ensureLeadForEmail(
   orgId: number,
-  email: string
+  rawEmail: string
 ): Promise<{ id: number; isNew: boolean }> {
   const sb = getSupabase();
+  // El correo se normaliza a minúsculas: la dirección es case-insensitive en
+  // la práctica y así el lead se encuentra aunque el operador lo tecleara con
+  // mayúsculas. La búsqueda usa ilike (con comodines escapados) para casar
+  // filas existentes guardadas con otro casing antes de esta normalización.
+  const email = rawEmail.trim().toLowerCase();
+  const emailPattern = email.replace(/[\\%_]/g, (c) => `\\${c}`);
   const { data: byEmail, error: e1 } = await sb
     .from("conversations")
     .select("id")
     .eq("org_id", orgId)
-    .eq("email", email)
+    .ilike("email", emailPattern)
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
@@ -1434,7 +1440,7 @@ export async function ensureLeadForEmail(
     .select("id, email")
     .eq("org_id", orgId)
     .eq("channel", "api")
-    .eq("external_id", email)
+    .ilike("external_id", emailPattern)
     .maybeSingle();
   if (e2) fail("find lead by external_id", e2.message);
   if (byExt) {
