@@ -1,5 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { enqueueEmails, getSupabase, type EmailDraft } from "@/lib/db";
+import {
+  addLeadEvent,
+  enqueueEmails,
+  ensureLeadForEmail,
+  getSupabase,
+  type EmailDraft,
+} from "@/lib/db";
 import { EMAIL_REGEX, renderTemplate, textToHtml } from "@/lib/mailer";
 import { getAllChannelSettings } from "@/lib/db";
 import { LEAD_STAGES, type LeadStage } from "@/lib/db";
@@ -46,6 +52,9 @@ export async function POST(req: NextRequest) {
     const html = body?.isHtml ? rawBody : textToHtml(rawBody);
     const batchId = crypto.randomUUID();
     const drafts: EmailDraft[] = [];
+    // Leads del CRM contactados por este envío (modo 'leads': se llenan al
+    // armar los drafts; single/manual: se resuelven/crean tras encolar).
+    const contactedLeadIds: number[] = [];
 
     if (body?.mode === "single") {
       const to = body.to?.trim().toLowerCase() ?? "";
@@ -76,6 +85,7 @@ export async function POST(req: NextRequest) {
 
       const seen = new Set<string>();
       for (const lead of (data ?? []) as {
+        id: number;
         name: string | null;
         company: string | null;
         email: string | null;
@@ -98,6 +108,7 @@ export async function POST(req: NextRequest) {
           html: renderTemplate(html, vars),
           batch_id: batchId,
         });
+        contactedLeadIds.push(lead.id);
       }
       if (drafts.length === 0) {
         return NextResponse.json(
@@ -140,7 +151,35 @@ export async function POST(req: NextRequest) {
     }
 
     const queued = await enqueueEmails(drafts);
-    return NextResponse.json({ ok: true, queued, batchId });
+
+    // CRM (mejor esfuerzo, después de encolar): cada destinatario es un lead
+    // que se está contactando. En single/manual el correo entra al CRM si no
+    // existía, y en todos los modos el envío queda como evento en la línea de
+    // tiempo del lead para el seguimiento. Un fallo aquí no deshace la cola.
+    let crmNew = 0;
+    try {
+      const leadIds = [...contactedLeadIds];
+      if (body?.mode !== "leads") {
+        const emails = drafts.map((d) => d.to_email);
+        // Lotes de 10: listas manuales largas sin serializar cientos de idas.
+        for (let i = 0; i < emails.length; i += 10) {
+          const results = await Promise.all(
+            emails.slice(i, i + 10).map((to) => ensureLeadForEmail(orgId, to).catch(() => null))
+          );
+          for (const r of results) {
+            if (!r) continue;
+            leadIds.push(r.id);
+            if (r.isNew) crmNew++;
+          }
+        }
+      }
+      const detail = `Correo encolado desde Mailing: "${subject}"`;
+      await Promise.all(leadIds.map((id) => addLeadEvent(id, "email", detail).catch(() => undefined)));
+    } catch {
+      /* el encolado ya quedó registrado */
+    }
+
+    return NextResponse.json({ ok: true, queued, batchId, crmNew });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Error desconocido" },

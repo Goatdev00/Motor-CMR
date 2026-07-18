@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import {
   addLeadEvent,
   enqueueEmails,
+  ensureLeadForEmail,
   getAllChannelSettings,
   getSupabase,
   setAppSetting,
@@ -130,7 +131,10 @@ export async function POST(req: NextRequest) {
         batch_id: batchId,
         ...(replyTo ? { reply_to: replyTo } : {}),
       });
-      draftLeadIds.push(null);
+      // El destinatario suelto también es un lead que se está contactando:
+      // entra al CRM (o se reutiliza el existente) para darle seguimiento.
+      const lead = await ensureLeadForEmail(orgId, to).catch(() => null);
+      draftLeadIds.push(lead?.id ?? null);
     }
 
     try {

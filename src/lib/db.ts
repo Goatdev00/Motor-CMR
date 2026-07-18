@@ -1402,6 +1402,54 @@ export async function upgradeApiLeadToWhatsapp(
   return (data as Conversation | null) ?? null;
 }
 
+// Al ENVIAR un correo (Mailing o Leads), el destinatario es un lead que se
+// está contactando: debe existir en el CRM para poder darle seguimiento.
+// Busca por correo en cualquier canal (prioriza el de actividad más
+// reciente) y, si no existe, lo crea en el canal 'api' con la etiqueta
+// 'mailing' para poder filtrarlo en la sección Leads.
+export async function ensureLeadForEmail(
+  orgId: number,
+  email: string
+): Promise<{ id: number; isNew: boolean }> {
+  const sb = getSupabase();
+  const { data: byEmail, error: e1 } = await sb
+    .from("conversations")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("email", email)
+    .order("last_message_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (e1) fail("find lead by email", e1.message);
+  if (byEmail) return { id: (byEmail as { id: number }).id, isNew: false };
+
+  // Leads 'api' viejos creados con el correo como external_id pero con la
+  // columna email vacía: son el mismo lead — se rellena y se reutiliza.
+  const { data: byExt, error: e2 } = await sb
+    .from("conversations")
+    .select("id, email")
+    .eq("org_id", orgId)
+    .eq("channel", "api")
+    .eq("external_id", email)
+    .maybeSingle();
+  if (e2) fail("find lead by external_id", e2.message);
+  if (byExt) {
+    const row = byExt as { id: number; email: string | null };
+    if (!row.email) await updateLeadFields(row.id, { email }).catch(() => undefined);
+    return { id: row.id, isNew: false };
+  }
+
+  const convo = await getOrCreateConversation(orgId, "api", email);
+  const tags = Array.isArray(convo.tags) ? convo.tags : [];
+  await updateLeadFields(convo.id, {
+    email,
+    ...(tags.includes("mailing") ? {} : { tags: [...tags, "mailing"] }),
+  }).catch(() => undefined);
+  // Si getOrCreateConversation devolvió una fila vieja (carrera), su email
+  // vacío igual delata que nunca se había contactado por correo.
+  return { id: convo.id, isNew: !convo.email };
+}
+
 // ── Claves de la API pública del CRM ────────────────────────
 
 export interface ApiKeyRow {

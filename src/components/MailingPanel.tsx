@@ -238,14 +238,18 @@ export default function MailingPanel() {
         }),
       });
       const data = (await res.json().catch(() => null)) as
-        | { queued?: number; error?: string }
+        | { queued?: number; crmNew?: number; error?: string }
         | null;
       if (!res.ok || !data?.queued) {
         setSendResult({ ok: false, text: data?.error ?? "No se pudo encolar" });
       } else {
+        const crm =
+          data.crmNew && data.crmNew > 0
+            ? ` · ${data.crmNew} lead${data.crmNew === 1 ? "" : "s"} nuevo${data.crmNew === 1 ? "" : "s"} en el CRM`
+            : "";
         setSendResult({
           ok: true,
-          text: `✓ ${data.queued} correo${data.queued === 1 ? "" : "s"} en cola — el bot los envía respetando tus límites`,
+          text: `✓ ${data.queued} correo${data.queued === 1 ? "" : "s"} en cola — el bot los envía respetando tus límites${crm}`,
         });
         setSubject("");
         setBodyText("");
