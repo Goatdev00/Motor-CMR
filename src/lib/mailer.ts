@@ -187,6 +187,31 @@ export function renderTemplate(
 
 export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
+// HTML → texto plano legible, para mostrar un correo enviado como mensaje en
+// el hilo conversacional del lead. No pretende ser un render fiel: convierte
+// saltos de bloque en saltos de línea, quita etiquetas y decodifica las
+// entidades más comunes. Recorta a `max` para no volcar correos enormes.
+export function htmlToText(html: string, max = 4000): string {
+  const text = html
+    // <br>, </p>, </div>, </h1..h6>, </li> → salto de línea.
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/\s*(p|div|h[1-6]|li|tr)\s*>/gi, "\n")
+    // Resto de etiquetas fuera.
+    .replace(/<[^>]+>/g, "")
+    // Entidades HTML frecuentes.
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    // Colapsa 3+ saltos y espacios sobrantes.
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 // Texto plano → HTML simple (párrafos y saltos), para quien no escribe HTML.
 export function textToHtml(text: string): string {
   const escaped = text

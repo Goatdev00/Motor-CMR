@@ -708,6 +708,9 @@ export interface LeadPatch {
   company?: string | null;
   email?: string | null;
   tags?: string[];
+  // Score manual (0-100). Comparte columna con el score de IA: fijarlo a
+  // mano pisa el de IA y viceversa (el operador manda con "Analizar"/manual).
+  lead_score?: number | null;
 }
 
 export async function updateLeadFields(id: number, patch: LeadPatch): Promise<Conversation> {
@@ -718,6 +721,7 @@ export async function updateLeadFields(id: number, patch: LeadPatch): Promise<Co
   if (patch.company !== undefined) update.company = patch.company;
   if (patch.email !== undefined) update.email = patch.email;
   if (patch.tags !== undefined) update.tags = patch.tags;
+  if (patch.lead_score !== undefined) update.lead_score = patch.lead_score;
   if (Object.keys(update).length === 0) {
     const current = await getConversationById(id);
     if (!current) fail("update lead", "conversación no encontrada");
@@ -1448,6 +1452,56 @@ export async function ensureLeadForEmail(
   // Si getOrCreateConversation devolvió una fila vieja (carrera), su email
   // vacío igual delata que nunca se había contactado por correo.
   return { id: convo.id, isNew: !convo.email };
+}
+
+// Correos del lead para el hilo conversacional: todos los de la cola
+// dirigidos a su dirección (dedupe por email = 1 lead por org, así que basta
+// filtrar por org_id + to_email). Orden cronológico. No trae el html completo
+// de golpe si son muchos; el resumen a texto se hace en la ruta.
+export interface LeadEmailRow {
+  id: number;
+  to_email: string;
+  subject: string;
+  html: string;
+  sent: number;
+  error: string | null;
+  reply_to?: string | null;
+  scheduled_at: number | null;
+  sent_at: number | null;
+  created_at: number;
+}
+
+export async function listLeadEmails(
+  orgId: number,
+  email: string,
+  limit = 100
+): Promise<LeadEmailRow[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("email_queue")
+    .select("id, to_email, subject, html, sent, error, reply_to, scheduled_at, sent_at, created_at")
+    .eq("org_id", orgId)
+    .eq("to_email", email.trim().toLowerCase())
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(limit);
+  if (error) {
+    // reply_to sin migrar: reintenta sin esa columna (mismo apaño que el resto).
+    if (/reply_to/i.test(error.message)) {
+      const retry = await sb
+        .from("email_queue")
+        .select("id, to_email, subject, html, sent, error, scheduled_at, sent_at, created_at")
+        .eq("org_id", orgId)
+        .eq("to_email", email.trim().toLowerCase())
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(limit);
+      if (retry.error) fail("list lead emails", retry.error.message);
+      return (retry.data ?? []) as LeadEmailRow[];
+    }
+    fail("list lead emails", error.message);
+  }
+  return (data ?? []) as LeadEmailRow[];
 }
 
 // ── Claves de la API pública del CRM ────────────────────────

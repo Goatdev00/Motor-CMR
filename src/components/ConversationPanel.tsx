@@ -12,6 +12,7 @@ import {
 import MessageBubble from "./MessageBubble";
 import ModeToggle from "./ModeToggle";
 import LeadPanel from "./LeadPanel";
+import EmailThread from "./EmailThread";
 import QuickReplies from "./QuickReplies";
 import Resizer, { usePanelWidth } from "./Resizer";
 
@@ -179,6 +180,10 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
 
   const { conversation, messages } = data;
   const isHuman = conversation.mode === "HUMAN";
+  // Los leads del canal 'api' (creados por Mailing/importación/API sin
+  // teléfono) no conversan por chat: su "conversación" son los correos. Se
+  // muestran como hilo de correo con su propio redactor.
+  const isEmailLead = conversation.channel === "api";
 
   return (
     <div className="flex min-w-0 flex-1">
@@ -199,7 +204,7 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
             )}
             {typeof conversation.lead_score === "number" && (
               <span
-                title="Score de intención de compra (IA)"
+                title="Score de intención de compra (IA o manual)"
                 className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
                   conversation.lead_score >= 70
                     ? "bg-emerald-950 text-emerald-400"
@@ -208,14 +213,14 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
                       : "bg-neutral-800 text-neutral-400"
                 }`}
               >
-                IA {conversation.lead_score}
+                Score {conversation.lead_score}
               </span>
             )}
           </p>
           <p className="text-xs text-neutral-500">{conversationSubtitle(conversation)}</p>
         </div>
         <div className="flex items-center gap-3">
-          <ModeToggle mode={conversation.mode} onChange={changeMode} />
+          {!isEmailLead && <ModeToggle mode={conversation.mode} onChange={changeMode} />}
           <button
             onClick={() => setShowLead(!showLead)}
             className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
@@ -235,54 +240,62 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
         </div>
       </div>
 
-      {/* Mensajes */}
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
-        {messages.length === 0 && (
-          <p className="pt-8 text-center text-sm text-neutral-500">Sin mensajes</p>
-        )}
-        {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
-        ))}
-      </div>
+      {isEmailLead ? (
+        /* Hilo de correo (con su propio redactor). onSent refresca la ficha
+           para ver el evento/score al instante. */
+        <EmailThread conversationId={conversation.id} onSent={refetch} />
+      ) : (
+        <>
+          {/* Mensajes */}
+          <div ref={scrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+            {messages.length === 0 && (
+              <p className="pt-8 text-center text-sm text-neutral-500">Sin mensajes</p>
+            )}
+            {messages.map((m) => (
+              <MessageBubble key={m.id} message={m} />
+            ))}
+          </div>
 
-      {/* Composer */}
-      <div className="border-t border-neutral-800 bg-neutral-900 p-3">
-        {isHuman ? (
-          <>
-            <div className="flex gap-2">
-              <QuickReplies
-                onInsert={(content) => setInput((prev) => (prev ? `${prev} ${content}` : content))}
-              />
+          {/* Composer */}
+          <div className="border-t border-neutral-800 bg-neutral-900 p-3">
+            {isHuman ? (
+              <>
+                <div className="flex gap-2">
+                  <QuickReplies
+                    onInsert={(content) => setInput((prev) => (prev ? `${prev} ${content}` : content))}
+                  />
+                  <input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        sendHuman();
+                      }
+                    }}
+                    placeholder="Escribe como humano..."
+                    className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none placeholder:text-neutral-500 focus:border-amber-500 focus:ring-2 focus:ring-amber-950"
+                  />
+                  <button
+                    onClick={sendHuman}
+                    disabled={sending || !input.trim()}
+                    className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                  >
+                    {sending ? "Enviando..." : "Enviar"}
+                  </button>
+                </div>
+                {sendError && <p className="mt-1.5 text-xs text-red-400">{sendError}</p>}
+              </>
+            ) : (
               <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendHuman();
-                  }
-                }}
-                placeholder="Escribe como humano..."
-                className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none placeholder:text-neutral-500 focus:border-amber-500 focus:ring-2 focus:ring-amber-950"
+                disabled
+                placeholder="El bot responde automáticamente — cambia a modo Humano para escribir"
+                className="w-full cursor-not-allowed rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-500 placeholder:text-neutral-500"
               />
-              <button
-                onClick={sendHuman}
-                disabled={sending || !input.trim()}
-                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
-              >
-                {sending ? "Enviando..." : "Enviar"}
-              </button>
-            </div>
-            {sendError && <p className="mt-1.5 text-xs text-red-400">{sendError}</p>}
-          </>
-        ) : (
-          <input
-            disabled
-            placeholder="El bot responde automáticamente — cambia a modo Humano para escribir"
-            className="w-full cursor-not-allowed rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-500 placeholder:text-neutral-500"
-          />
-        )}
-      </div>
+            )}
+          </div>
+        </>
+      )}
 
       {/* Diálogo de confirmación de borrado */}
       {confirmingDelete && (

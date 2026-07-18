@@ -106,6 +106,9 @@ export default function LeadPanel({ lead, onLeadChanged, width = 320 }: Props) {
   const seededRef = useRef({ name: "", company: "", email: "", deal_value: "", tags: "" });
   const [savingForm, setSavingForm] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  // Score manual (independiente del formulario de la ficha).
+  const [scoreInput, setScoreInput] = useState("");
+  const [savingScore, setSavingScore] = useState(false);
   const [noteInput, setNoteInput] = useState("");
   const [fuDate, setFuDate] = useState("");
   const [fuMessage, setFuMessage] = useState("");
@@ -123,6 +126,7 @@ export default function LeadPanel({ lead, onLeadChanged, width = 320 }: Props) {
     };
     setForm(seeded);
     seededRef.current = seeded;
+    setScoreInput(typeof lead.lead_score === "number" ? String(lead.lead_score) : "");
     setNoteInput("");
     setFuDate("");
     setFuMessage("");
@@ -197,6 +201,18 @@ export default function LeadPanel({ lead, onLeadChanged, width = 320 }: Props) {
     const ok = await patch(body);
     if (ok) seededRef.current = { ...form };
     setSavingForm(false);
+  };
+
+  const saveScore = async () => {
+    const raw = scoreInput.trim();
+    const value = raw === "" ? null : Number(raw);
+    if (value !== null && (!Number.isInteger(value) || value < 0 || value > 100)) {
+      setError("El score debe ser un entero entre 0 y 100");
+      return;
+    }
+    setSavingScore(true);
+    await patch({ lead_score: value });
+    setSavingScore(false);
   };
 
   const analyze = async () => {
@@ -389,9 +405,30 @@ export default function LeadPanel({ lead, onLeadChanged, width = 320 }: Props) {
         ) : (
           <p className="text-xs text-neutral-500">
             Aún sin análisis. Se genera solo cuando el cliente escribe, o pulsa
-            &quot;Analizar ahora&quot;.
+            &quot;Analizar ahora&quot;. También puedes puntuarlo tú abajo.
           </p>
         )}
+
+        {/* Score manual: útil sobre todo en leads de correo, que no tienen
+            conversación que la IA pueda analizar. Comparte campo con el de IA. */}
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={scoreInput}
+            onChange={(e) => setScoreInput(e.target.value)}
+            placeholder="0-100"
+            className={`${inputClass} w-24`}
+          />
+          <button
+            onClick={saveScore}
+            disabled={savingScore}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+          >
+            {savingScore ? "..." : "Fijar score manual"}
+          </button>
+        </div>
       </div>
 
       {/* Ficha */}

@@ -128,6 +128,21 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         ? body.tags.filter((t): t is string => typeof t === "string" && t.trim() !== "").map((t) => t.trim())
         : [];
     }
+    // Score manual (0-100 entero). Comparte columna con el score de IA.
+    if (body.lead_score !== undefined) {
+      if (body.lead_score === null || body.lead_score === "") {
+        patch.lead_score = null;
+      } else {
+        const v = Number(body.lead_score);
+        if (!Number.isInteger(v) || v < 0 || v > 100) {
+          return NextResponse.json(
+            { error: "El score debe ser un entero entre 0 y 100" },
+            { status: 400 }
+          );
+        }
+        patch.lead_score = v;
+      }
+    }
 
     const lead = await updateLeadFields(id, patch);
     return NextResponse.json({ ok: true, lead });
