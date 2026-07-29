@@ -15,7 +15,7 @@ const inputClass =
 const selectClass =
   "rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-xs text-neutral-200 outline-none focus:border-emerald-600";
 
-const REPLY_CHANNELS: Channel[] = ["whatsapp", "whatsapp_api", "messenger", "instagram"];
+const REPLY_CHANNELS: Channel[] = ["whatsapp", "whatsapp_api"];
 
 interface ChatItem {
   id: number;

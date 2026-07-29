@@ -45,7 +45,6 @@ interface LeadOption {
   id: number;
   name: string | null;
   phone: string | null;
-  email: string | null;
   external_id: string | null;
 }
 
@@ -181,7 +180,7 @@ export default function AlarmsPanel() {
           <div>
             <h2 className="text-base font-semibold text-neutral-100">Alarmas</h2>
             <p className="text-xs text-neutral-500">
-              Avisos programados por WhatsApp o correo: renovaciones de suscripción, pagos,
+              Avisos programados por WhatsApp: renovaciones de suscripción, pagos,
               reuniones, tareas… con recurrencia opcional. El bot los envía a su hora.
             </p>
           </div>
@@ -202,7 +201,7 @@ export default function AlarmsPanel() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-neutral-100">{a.title}</p>
                 <p className="truncate text-xs text-neutral-500">
-                  {a.via === "whatsapp" ? `WhatsApp +${a.to_phone}` : `Correo ${a.to_email}`}
+                  {`WhatsApp +${a.to_phone}`}
                   {" · "}
                   {a.active ? `Próxima: ${fmtDateTime(a.next_fire_at)}` : "Apagada"}
                   {" · "}
@@ -303,12 +302,11 @@ function AlarmModal({ alarm, members, accounts, leads, onClose, onSaved }: Modal
   const [title, setTitle] = useState(alarm?.title ?? "");
   const [kind, setKind] = useState<AlarmKind>(alarm?.kind ?? "SUSCRIPCION");
   const [message, setMessage] = useState(alarm?.message ?? "");
-  const [via, setVia] = useState<"whatsapp" | "email">(alarm?.via ?? "whatsapp");
   // Una alarma que ya venía ligada a un lead abre en modo lead.
   const [destMode, setDestMode] = useState<DestMode>(alarm?.conversation_id ? "lead" : "manual");
   const [memberId, setMemberId] = useState<number | "">("");
   const [leadId, setLeadId] = useState<number | "">(alarm?.conversation_id ?? "");
-  const [manual, setManual] = useState(alarm ? (alarm.via === "whatsapp" ? alarm.to_phone ?? "" : alarm.to_email ?? "") : "");
+  const [manual, setManual] = useState(alarm?.to_phone ?? "");
   const [when, setWhen] = useState(
     epochToInput(alarm?.next_fire_at ?? Math.floor(Date.now() / 1000) + 3600)
   );
@@ -321,30 +319,23 @@ function AlarmModal({ alarm, members, accounts, leads, onClose, onSaved }: Modal
   const memberPhone = (m: TeamMember): string | null =>
     m.notify_phone ?? accounts.find((a) => a.id === m.wa_account_id)?.phone ?? null;
 
-  const resolveDest = (): { to_phone?: string; to_email?: string; conversation_id?: number | null; err?: string } => {
+  const resolveDest = (): { to_phone?: string; conversation_id?: number | null; err?: string } => {
     if (destMode === "member") {
       const m = members.find((x) => x.id === memberId);
       if (!m) return { err: "Elige un miembro" };
-      if (via === "whatsapp") {
-        const phone = memberPhone(m);
-        if (!phone) return { err: `${m.name} no tiene WhatsApp configurado (cuenta o teléfono de avisos)` };
-        return { to_phone: phone };
-      }
-      return { err: "Los miembros no tienen correo registrado: usa destino manual" };
+      const phone = memberPhone(m);
+      if (!phone) return { err: `${m.name} no tiene WhatsApp configurado (cuenta o teléfono de avisos)` };
+      return { to_phone: phone };
     }
     if (destMode === "lead") {
       const l = leads.find((x) => x.id === leadId);
       if (!l) return { err: "Elige un lead" };
-      if (via === "whatsapp") {
-        const phone = l.phone ?? (/^\d{7,15}$/.test(l.external_id ?? "") ? l.external_id : null);
-        if (!phone) return { err: "Ese lead no tiene teléfono" };
-        return { to_phone: phone, conversation_id: l.id };
-      }
-      if (!l.email) return { err: "Ese lead no tiene correo" };
-      return { to_email: l.email, conversation_id: l.id };
+      const phone = l.phone ?? (/^\d{7,15}$/.test(l.external_id ?? "") ? l.external_id : null);
+      if (!phone) return { err: "Ese lead no tiene teléfono" };
+      return { to_phone: phone, conversation_id: l.id };
     }
-    if (!manual.trim()) return { err: via === "whatsapp" ? "Escribe el número" : "Escribe el correo" };
-    return via === "whatsapp" ? { to_phone: manual.trim() } : { to_email: manual.trim() };
+    if (!manual.trim()) return { err: "Escribe el número" };
+    return { to_phone: manual.trim() };
   };
 
   const save = async () => {
@@ -367,9 +358,8 @@ function AlarmModal({ alarm, members, accounts, leads, onClose, onSaved }: Modal
         title: title.trim(),
         message: message.trim(),
         kind,
-        via,
+        via: "whatsapp" as const,
         to_phone: dest.to_phone ?? null,
-        to_email: dest.to_email ?? null,
         conversation_id: dest.conversation_id ?? null,
         next_fire_at: nextFireAt,
         repeat_every: repeat,
@@ -439,47 +429,26 @@ function AlarmModal({ alarm, members, accounts, leads, onClose, onSaved }: Modal
             />
           </div>
 
-          {/* Canal */}
+          {/* Destino (siempre por WhatsApp) */}
           <div className="flex items-center gap-3">
-            <div className="inline-flex overflow-hidden rounded-lg border border-neutral-700 text-xs font-medium">
-              {(
-                [
-                  ["whatsapp", "WhatsApp"],
-                  ["email", "Correo"],
-                ] as const
-              ).map(([key, label], i) => (
-                <button
-                  key={key}
-                  onClick={() => setVia(key)}
-                  className={`px-3 py-1.5 transition-colors ${i > 0 ? "border-l border-neutral-700" : ""} ${
-                    via === key
-                      ? "bg-neutral-100 text-neutral-900"
-                      : "bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
             <select
               value={destMode}
               onChange={(e) => setDestMode(e.target.value as DestMode)}
               className={`${inputClass} w-auto`}
             >
-              <option value="manual">{via === "whatsapp" ? "Número manual" : "Correo manual"}</option>
+              <option value="manual">Número manual</option>
               <option value="member">Miembro del equipo</option>
               <option value="lead">Lead del CRM</option>
             </select>
           </div>
 
-          {/* Destino */}
           {destMode === "manual" && (
             <div>
-              <label className={labelClass}>{via === "whatsapp" ? "Número (con indicativo)" : "Correo"}</label>
+              <label className={labelClass}>Número (con indicativo)</label>
               <input
                 value={manual}
                 onChange={(e) => setManual(e.target.value)}
-                placeholder={via === "whatsapp" ? "573001112233" : "cliente@correo.com"}
+                placeholder="573001112233"
                 className={inputClass}
               />
             </div>
@@ -515,7 +484,7 @@ function AlarmModal({ alarm, members, accounts, leads, onClose, onSaved }: Modal
                 <option value="">— Elegir —</option>
                 {leads.map((l) => (
                   <option key={l.id} value={l.id}>
-                    {l.name ?? l.phone ?? l.email ?? `Lead #${l.id}`}
+                    {l.name ?? l.phone ?? `Lead #${l.id}`}
                   </option>
                 ))}
               </select>
@@ -549,8 +518,7 @@ function AlarmModal({ alarm, members, accounts, leads, onClose, onSaved }: Modal
           </div>
 
           <p className="text-xs text-neutral-600">
-            WhatsApp: sale por cualquiera de tus cuentas conectadas (no toca el hilo del lead).
-            Correo: usa la cuenta SMTP de la pestaña Mailing.
+            El aviso sale por cualquiera de tus cuentas de WhatsApp conectadas (no toca el hilo del lead).
           </p>
 
           {error && <p className="rounded-lg bg-red-950 p-2 text-xs text-red-400">{error}</p>}

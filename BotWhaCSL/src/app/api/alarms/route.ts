@@ -13,8 +13,6 @@ import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 function migrationHint(message: string): string {
   return /does not exist|schema cache/i.test(message)
     ? message +
@@ -58,29 +56,18 @@ export async function POST(req: NextRequest) {
     if (!ALARM_KINDS.includes(kind)) {
       return NextResponse.json({ error: "Tipo inválido" }, { status: 400 });
     }
-    const via = body.via as "whatsapp" | "email";
-    if (via !== "whatsapp" && via !== "email") {
-      return NextResponse.json({ error: "Canal inválido (whatsapp o email)" }, { status: 400 });
+    // Las alarmas salen solo por WhatsApp.
+    if (body.via !== undefined && body.via !== "whatsapp") {
+      return NextResponse.json({ error: "Canal inválido (solo whatsapp)" }, { status: 400 });
     }
-
-    let toPhone: string | null = null;
-    let toEmail: string | null = null;
-    if (via === "whatsapp") {
-      const digits = typeof body.to_phone === "string" ? body.to_phone.replace(/[\s\-+().]/g, "") : "";
-      if (!/^\d{7,15}$/.test(digits)) {
-        return NextResponse.json(
-          { error: "Teléfono inválido (solo dígitos, con indicativo de país)" },
-          { status: 400 }
-        );
-      }
-      toPhone = digits;
-    } else {
-      const email = typeof body.to_email === "string" ? body.to_email.trim() : "";
-      if (!EMAIL_REGEX.test(email) || email.length > 200) {
-        return NextResponse.json({ error: "Correo inválido" }, { status: 400 });
-      }
-      toEmail = email;
+    const digits = typeof body.to_phone === "string" ? body.to_phone.replace(/[\s\-+().]/g, "") : "";
+    if (!/^\d{7,15}$/.test(digits)) {
+      return NextResponse.json(
+        { error: "Teléfono inválido (solo dígitos, con indicativo de país)" },
+        { status: 400 }
+      );
     }
+    const toPhone = digits;
 
     const nextFireAt = Number(body.next_fire_at);
     if (!Number.isInteger(nextFireAt) || nextFireAt <= 0 || nextFireAt > 32503680000) {
@@ -109,9 +96,8 @@ export async function POST(req: NextRequest) {
       title,
       message,
       kind,
-      via,
+      via: "whatsapp",
       to_phone: toPhone,
-      to_email: toEmail,
       conversation_id: conversationId,
       next_fire_at: nextFireAt,
       repeat_every: repeat,

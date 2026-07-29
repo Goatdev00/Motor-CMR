@@ -3,11 +3,10 @@ import { invalidateChannelSettingsCache, testChannel } from "@/lib/meta";
 import { isChannel } from "@/lib/channels";
 import { getAllChannelSettings } from "@/lib/db";
 import { requireMember } from "@/lib/auth";
-import { verifyEmailConfig } from "@/lib/mailer";
 import { verifyLlmConfig } from "@/lib/llm";
 
-// Prueba de conexión: canales de Meta (tokens), cuenta de correo (SMTP) o
-// proveedor de IA (llamada mínima real al modelo).
+// Prueba de conexión: WhatsApp Cloud API (token) o proveedor de IA
+// (llamada mínima real al modelo).
 
 // Misma máscara que usa el GET de settings (••••XXXX).
 const MASK_PREFIX = "••••";
@@ -52,19 +51,6 @@ export async function POST(req: NextRequest) {
       config?: unknown;
     } | null;
     const channel = body?.channel;
-
-    // Correo: verifica credenciales SMTP con lo guardado + lo del formulario.
-    if (channel === "email") {
-      const row = (await getAllChannelSettings(orgId))["email"];
-      const m = mergeConfig(row?.config, body?.config);
-      if ("maskError" in m) return NextResponse.json({ ok: false, detail: m.maskError });
-      const result = await verifyEmailConfig(
-        row
-          ? { ...row, config: m.merged }
-          : { channel: "email", enabled: false, config: m.merged, updated_at: 0, org_id: orgId }
-      );
-      return NextResponse.json(result);
-    }
 
     // IA: llamada mínima real con el proveedor/clave/modelo del formulario.
     if (channel === "llm") {

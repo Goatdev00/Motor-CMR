@@ -43,7 +43,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     // jamás sale y sin error visible.
     if (lead.channel === "api") {
       return NextResponse.json(
-        { error: "Este lead llegó por la API sin teléfono: no se le pueden programar seguimientos de WhatsApp. Usa una alarma por correo." },
+        { error: "Este lead llegó por la API sin teléfono: no se le pueden programar seguimientos de WhatsApp." },
         { status: 400 }
       );
     }

@@ -7,29 +7,21 @@ import { isChannel } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
 
-// Filas configurables: los 4 canales + webhook de Meta + cuenta de correo +
+// Filas configurables: los canales de WhatsApp + webhook de Meta +
 // proveedor de IA (llm).
 const SETTING_KEYS = [
   "whatsapp",
   "whatsapp_api",
-  "messenger",
-  "instagram",
   "meta_webhook",
-  "email",
   "llm",
 ];
 
 // Campos secretos: al leer se enmascaran (••••XXXX); al guardar, un valor
 // enmascarado significa "no lo cambies".
 const SECRET_FIELDS = new Set([
-  "page_access_token",
   "access_token",
   "app_secret",
-  "ig_app_secret",
-  "password",
   "api_key",
-  // Signing Secret del webhook de recepción de correo (Resend Inbound).
-  "inbound_secret",
 ]);
 const MASK_PREFIX = "••••";
 
@@ -77,12 +69,7 @@ export async function PUT(req: NextRequest) {
     if (typeof channel !== "string" || !SETTING_KEYS.includes(channel)) {
       return NextResponse.json({ error: "channel inválido" }, { status: 400 });
     }
-    if (
-      channel !== "meta_webhook" &&
-      channel !== "email" &&
-      channel !== "llm" &&
-      !isChannel(channel)
-    ) {
+    if (channel !== "meta_webhook" && channel !== "llm" && !isChannel(channel)) {
       return NextResponse.json({ error: "channel inválido" }, { status: 400 });
     }
     const enabled = body?.enabled === true;

@@ -20,7 +20,7 @@ const RESOURCES: Resource[] = [
     key: "guia-canales",
     title: "Guía de conexión de canales",
     description:
-      "Paso a paso para conectar WhatsApp (QR y API oficial), Facebook Messenger, Instagram, el correo SMTP y la API del CRM. Lista para compartir con clientes.",
+      "Paso a paso para conectar WhatsApp (QR y Cloud API oficial), la API del CRM y Google Drive. Lista para compartir con clientes.",
     href: "/guia-conexion-canales.html",
   },
 ];

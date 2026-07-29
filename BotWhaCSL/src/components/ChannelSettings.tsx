@@ -32,33 +32,6 @@ const META_CARDS: {
       { key: "access_token", label: "Access Token", placeholder: "EAAG...", secret: true },
     ],
   },
-  {
-    channel: "messenger",
-    title: "Facebook Messenger",
-    description: "Mensajes de tu página de Facebook. Requiere el token de la página con pages_messaging.",
-    fields: [
-      { key: "page_access_token", label: "Page Access Token", placeholder: "EAAG...", secret: true },
-      {
-        key: "page_id",
-        label: "ID de la página (se detecta solo al probar conexión; manual si hay varias organizaciones)",
-        placeholder: "877996495392097",
-      },
-    ],
-  },
-  {
-    channel: "instagram",
-    title: "Instagram (DMs)",
-    description:
-      "Mensajes directos de tu cuenta profesional vinculada a la página. Requiere instagram_manage_messages.",
-    fields: [
-      { key: "page_access_token", label: "Token (IGAA… del caso de uso de Instagram, o EAAG… de página)", placeholder: "IGAA...", secret: true },
-      {
-        key: "ig_user_id",
-        label: "ID de la cuenta de Instagram (se detecta solo al probar conexión con token IGAA…)",
-        placeholder: "17841475954669222",
-      },
-    ],
-  },
 ];
 
 const inputClass =
@@ -599,7 +572,7 @@ export default function ChannelSettings() {
           );
         })()}
 
-        {/* Canales de Meta */}
+        {/* WhatsApp Cloud API (canal oficial de Meta) */}
         {META_CARDS.map((card) => {
           const row = settings[card.channel];
           const result = testResult[card.channel];
@@ -673,19 +646,19 @@ export default function ChannelSettings() {
         {/* API pública del CRM (conectar otras apps) */}
         <ApiKeysCard />
 
-        {/* Webhook compartido de Meta */}
+        {/* Webhook de Meta (WhatsApp Cloud API) */}
         <CollapsibleCard
-          title="Webhook de Meta (compartido)"
+          title="Webhook de Meta (WhatsApp API)"
           completed={Boolean(settings["meta_webhook"]?.config?.verify_token)}
           className="md:col-span-2"
           description={
             <>
-              Meta envía los mensajes entrantes a esta URL. Debe ser <strong>pública HTTPS</strong>:
-              en local usa un túnel (p.ej. <code className="font-mono">cloudflared tunnel --url http://localhost:3000</code>)
+              Meta envía los mensajes entrantes de WhatsApp Cloud API a esta URL. Debe ser{" "}
+              <strong>pública HTTPS</strong>: en local usa un túnel (p.ej.{" "}
+              <code className="font-mono">cloudflared tunnel --url http://localhost:3000</code>)
               y registra la URL resultante + <code className="font-mono">/api/webhooks/meta</code> en
               tu app de Meta (developers.facebook.com → Webhooks), suscribiendo el campo
-              <code className="font-mono"> messages</code> en los objetos Page, Instagram y WhatsApp
-              Business Account.
+              <code className="font-mono"> messages</code> en el objeto WhatsApp Business Account.
             </>
           }
         >
@@ -738,20 +711,6 @@ export default function ChannelSettings() {
                 onChange={(e) => setField("meta_webhook", "app_secret", e.target.value)}
                 onFocus={selectAllOnFocus}
                 placeholder="de Meta → App settings → Basic"
-                autoComplete="off"
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-neutral-500">
-                App Secret de Instagram (opcional — apps nuevas con token IGAA…)
-              </label>
-              <input
-                type="password"
-                value={forms["meta_webhook"]?.ig_app_secret ?? ""}
-                onChange={(e) => setField("meta_webhook", "ig_app_secret", e.target.value)}
-                onFocus={selectAllOnFocus}
-                placeholder="del caso de uso de Instagram → Configuración"
                 autoComplete="off"
                 className={inputClass}
               />

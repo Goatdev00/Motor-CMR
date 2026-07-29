@@ -1,7 +1,7 @@
 // Capa de datos sobre Supabase (Postgres).
 // Reemplaza al better-sqlite3 del diseño original: todos los helpers son
 // async y la "memoria compartida" entre el proceso bot y el de Next.js
-// es la base remota (connection_state + outbox).
+// es la base remota (wa_accounts + outbox).
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { WebSocketLikeConstructor } from "@supabase/realtime-js";
 import { WebSocket as NodeWebSocket } from "ws";
@@ -31,7 +31,7 @@ export const LEAD_STAGES: LeadStage[] = [
 export interface Conversation {
   id: number;
   // Canal por el que habla este lead; external_id es su identificador en el
-  // canal (teléfono en WhatsApp, PSID en Messenger, IGSID en Instagram).
+  // canal (teléfono en WhatsApp — Baileys o Cloud API —, correo en 'api').
   channel: Channel;
   external_id: string | null;
   phone: string | null;
@@ -57,7 +57,7 @@ export interface Conversation {
   // ── Equipo ──
   assigned_member_id: number | null;
   // Cuenta de WhatsApp por la que habla este lead (última que recibió su
-  // mensaje). Null en canales de Meta o datos previos a la migración.
+  // mensaje). Null en WhatsApp Cloud API o datos previos a la migración.
   wa_account_id: number | null;
   // ── Multi-organización ──
   // Organización (cliente de la agencia) dueña de este lead.
@@ -113,8 +113,8 @@ export interface Message {
   created_at: number;
 }
 
-// Cuenta de WhatsApp (multi-sesión Baileys). Reemplaza a connection_state:
-// el bot mantiene una sesión por cuenta habilitada y escribe aquí su estado.
+// Cuenta de WhatsApp (multi-sesión Baileys): el bot mantiene una sesión por
+// cuenta habilitada y escribe aquí su estado.
 export interface WaAccount {
   id: number;
   label: string;
@@ -154,7 +154,7 @@ export interface OutboxItem {
   id: number;
   // Null en avisos internos sin lead (p.ej. alarmas a un miembro del equipo).
   conversation_id: number | null;
-  // Destinatario en su canal: teléfono (WhatsApp) o PSID/IGSID (Meta).
+  // Destinatario en su canal: teléfono (WhatsApp por Baileys o Cloud API).
   phone: string;
   channel: Channel;
   content: string;
@@ -609,7 +609,8 @@ export async function insertHumanMessage(
 
 // excludeChannels: canales que ahora mismo no pueden entregar (p.ej.
 // 'whatsapp' con Baileys caído) se excluyen de la consulta — si no, 20 items
-// atascados de WhatsApp taparían los envíos de Meta (inanición por el limit).
+// atascados de WhatsApp taparían los envíos de la Cloud API (inanición por
+// el limit).
 export async function getPendingOutbox(
   limit = 20,
   excludeChannels: string[] = []
@@ -912,7 +913,6 @@ export async function assertCrmMigration(): Promise<void> {
     .select("external_id, channel")
     .limit(1);
   const { error: settingsError } = await sb.from("channel_settings").select("channel").limit(1);
-  const { error: emailError } = await sb.from("email_queue").select("id").limit(1);
   const { error: calendarError } = await sb.from("calendar_events").select("id").limit(1);
   const { error: teamError } = await sb
     .from("conversations")
@@ -927,7 +927,6 @@ export async function assertCrmMigration(): Promise<void> {
     error ??
     convError ??
     settingsError ??
-    emailError ??
     calendarError ??
     teamError ??
     accountsError ??
@@ -946,9 +945,9 @@ export async function assertCrmMigration(): Promise<void> {
 
 // ── Configuración de canales (editable desde el dashboard) ──
 
-// channel_settings guarda filas por canal ('whatsapp', 'whatsapp_api',
-// 'messenger', 'instagram') y una pseudo-fila 'meta_webhook' con el
-// verify_token/app_secret compartidos del webhook de Meta.
+// channel_settings guarda filas por canal ('whatsapp', 'whatsapp_api') y una
+// pseudo-fila 'meta_webhook' con el verify_token/app_secret del webhook de
+// Meta (WhatsApp Cloud API).
 export interface ChannelSettingsRow {
   channel: string;
   enabled: boolean;
@@ -973,8 +972,8 @@ export async function getAllChannelSettings(
 }
 
 // TODAS las filas de todas las organizaciones: la usan el bot (toggles por
-// organización) y el webhook de Meta (enrutar cada evento a su organización
-// por page_id / IG user id / phone_number_id).
+// organización) y el webhook de Meta (enrutar cada evento de WhatsApp Cloud
+// API a su organización por phone_number_id).
 export async function listAllChannelSettings(): Promise<ChannelSettingsRow[]> {
   const sb = getSupabase();
   const { data, error } = await sb.from("channel_settings").select("*");
@@ -1002,188 +1001,6 @@ export async function upsertChannelSettings(
   if (error) fail("upsert channel_settings", error.message);
 }
 
-// ── Mailing: cola de correos ────────────────────────────────
-// sent: 0 pendiente, 1 enviado, 2 fallido definitivo, 3 enviando.
-
-export interface EmailQueueItem {
-  id: number;
-  to_email: string;
-  to_name: string | null;
-  subject: string;
-  html: string;
-  batch_id: string | null;
-  sent: number;
-  attempts: number;
-  error: string | null;
-  scheduled_at: number | null;
-  sent_at: number | null;
-  created_at: number;
-  // Reply-To opcional (sección Leads). undefined si la columna aún no existe
-  // en la DB (schema.sql sin re-ejecutar): el envío sale sin la cabecera.
-  reply_to?: string | null;
-  // Organización del envío: decide con QUÉ cuenta SMTP sale y a qué límites
-  // por hora/día se descuenta.
-  org_id: number;
-}
-
-export interface EmailDraft {
-  to_email: string;
-  to_name?: string | null;
-  subject: string;
-  html: string;
-  batch_id?: string | null;
-  reply_to?: string | null;
-  org_id: number;
-}
-
-export async function enqueueEmails(drafts: EmailDraft[]): Promise<number> {
-  if (drafts.length === 0) return 0;
-  const sb = getSupabase();
-  // Inserción por lotes (Supabase acepta arrays; 200 por tanda de sobra).
-  for (let i = 0; i < drafts.length; i += 200) {
-    const chunk = drafts.slice(i, i + 200);
-    const { error } = await sb.from("email_queue").insert(chunk);
-    if (error) fail("enqueue emails", error.message);
-  }
-  return drafts.length;
-}
-
-export async function getPendingEmails(limit: number): Promise<EmailQueueItem[]> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("email_queue")
-    .select("*")
-    .eq("sent", 0)
-    .or(`scheduled_at.is.null,scheduled_at.lte.${epoch()}`)
-    .order("created_at", { ascending: true })
-    .order("id", { ascending: true })
-    .limit(limit);
-  if (error) fail("get pending emails", error.message);
-  return (data ?? []) as EmailQueueItem[];
-}
-
-// Reclamo condicional (mismo patrón que el outbox de mensajes).
-export async function claimEmail(id: number): Promise<boolean> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("email_queue")
-    .update({ sent: 3 })
-    .eq("id", id)
-    .eq("sent", 0)
-    .select("id");
-  if (error) fail("claim email", error.message);
-  return (data ?? []).length > 0;
-}
-
-export async function markEmailSent(id: number): Promise<void> {
-  const sb = getSupabase();
-  const { error } = await sb
-    .from("email_queue")
-    .update({ sent: 1, sent_at: epoch(), error: null })
-    .eq("id", id);
-  if (error) fail("mark email sent", error.message);
-}
-
-// Fallo con backoff (60s × intento); al 3er intento queda fallido definitivo.
-export async function releaseEmailFailure(
-  item: EmailQueueItem,
-  errorMessage: string,
-  maxAttempts = 3
-): Promise<boolean> {
-  const sb = getSupabase();
-  const attempts = item.attempts + 1;
-  const discarded = attempts >= maxAttempts;
-  const patch: Record<string, unknown> = {
-    attempts,
-    sent: discarded ? 2 : 0,
-    error: errorMessage.slice(0, 500),
-  };
-  if (!discarded) patch.scheduled_at = epoch() + 60 * attempts;
-  const { error } = await sb.from("email_queue").update(patch).eq("id", item.id);
-  if (error) fail("release email", error.message);
-  return discarded;
-}
-
-// Difiere un correo pendiente SIN quemar intentos (organización con Mailing
-// apagado o límite alcanzado: sus filas no deben taponar el lote global).
-export async function deferEmail(id: number, seconds: number): Promise<void> {
-  const sb = getSupabase();
-  const { error } = await sb
-    .from("email_queue")
-    .update({ scheduled_at: epoch() + seconds })
-    .eq("id", id)
-    .eq("sent", 0);
-  if (error) fail("defer email", error.message);
-}
-
-export async function resetInFlightEmails(): Promise<void> {
-  const sb = getSupabase();
-  const { error } = await sb.from("email_queue").update({ sent: 0 }).eq("sent", 3);
-  if (error) fail("reset emails in-flight", error.message);
-}
-
-// Enviados desde un instante (para los límites por hora/día opcionales).
-// Por organización: los límites son de la cuenta SMTP de cada cliente.
-export async function countEmailsSentSince(since: number, orgId: number): Promise<number> {
-  const sb = getSupabase();
-  const { count, error } = await sb
-    .from("email_queue")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", orgId)
-    .eq("sent", 1)
-    .gte("sent_at", since);
-  if (error) fail("count emails sent", error.message);
-  return count ?? 0;
-}
-
-export interface EmailStats {
-  pending: number;
-  sentLastDay: number;
-  failed: number;
-}
-
-export async function getEmailStats(orgId: number): Promise<EmailStats> {
-  const sb = getSupabase();
-  const [pending, sentDay, failed] = await Promise.all([
-    sb
-      .from("email_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", orgId)
-      .eq("sent", 0),
-    sb
-      .from("email_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", orgId)
-      .eq("sent", 1)
-      .gte("sent_at", epoch() - 86400),
-    sb
-      .from("email_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", orgId)
-      .eq("sent", 2),
-  ]);
-  const firstError = pending.error ?? sentDay.error ?? failed.error;
-  if (firstError) fail("email stats", firstError.message);
-  return {
-    pending: pending.count ?? 0,
-    sentLastDay: sentDay.count ?? 0,
-    failed: failed.count ?? 0,
-  };
-}
-
-export async function listRecentEmails(orgId: number, limit = 20): Promise<EmailQueueItem[]> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("email_queue")
-    .select("*")
-    .eq("org_id", orgId)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false })
-    .limit(limit);
-  if (error) fail("list recent emails", error.message);
-  return (data ?? []) as EmailQueueItem[];
-}
-
 // ── Alarmas (renovaciones, pagos, recordatorios) ────────────
 
 export type AlarmKind = "SUSCRIPCION" | "PAGO" | "REUNION" | "TAREA" | "OTRO";
@@ -1196,9 +1013,8 @@ export interface Alarm {
   title: string;
   message: string;
   kind: AlarmKind;
-  via: "whatsapp" | "email";
+  via: "whatsapp";
   to_phone: string | null;
-  to_email: string | null;
   conversation_id: number | null;
   next_fire_at: number;
   repeat_every: AlarmRepeat;
@@ -1206,7 +1022,7 @@ export interface Alarm {
   last_fired_at: number | null;
   last_error: string | null;
   created_at: number;
-  // Organización dueña: sus avisos salen por SUS canales (WhatsApp/SMTP).
+  // Organización dueña: sus avisos salen por SUS cuentas de WhatsApp.
   org_id: number;
 }
 
@@ -1214,9 +1030,8 @@ export interface AlarmDraft {
   title: string;
   message: string;
   kind: AlarmKind;
-  via: "whatsapp" | "email";
+  via: "whatsapp";
   to_phone?: string | null;
-  to_email?: string | null;
   conversation_id?: number | null;
   next_fire_at: number;
   repeat_every: AlarmRepeat;
@@ -1246,7 +1061,6 @@ export async function createAlarm(orgId: number, draft: AlarmDraft): Promise<Ala
       kind: draft.kind,
       via: draft.via,
       to_phone: draft.to_phone ?? null,
-      to_email: draft.to_email ?? null,
       conversation_id: draft.conversation_id ?? null,
       next_fire_at: draft.next_fire_at,
       repeat_every: draft.repeat_every,
@@ -1270,7 +1084,6 @@ export async function updateAlarm(
     "kind",
     "via",
     "to_phone",
-    "to_email",
     "conversation_id",
     "next_fire_at",
     "repeat_every",
@@ -1341,10 +1154,10 @@ export async function claimAlarmFire(
   return (data ?? []).length > 0;
 }
 
-// Difiere una alarma vencida que NO puede dispararse aún (p.ej. correo sin
-// SMTP configurado): sin esto ocupaba el lote de vencidas para siempre y
-// bloqueaba las alarmas de otras organizaciones. Condicional al next_fire_at
-// conocido: si el operador la reprogramó en paralelo, su cambio manda.
+// Difiere una alarma vencida que NO puede dispararse aún: sin esto ocupaba
+// el lote de vencidas para siempre y bloqueaba las alarmas de otras
+// organizaciones. Condicional al next_fire_at conocido: si el operador la
+// reprogramó en paralelo, su cambio manda.
 export async function deferAlarm(alarm: Alarm, seconds: number): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb
@@ -1404,171 +1217,6 @@ export async function upgradeApiLeadToWhatsapp(
     fail("upgrade api lead", error.message);
   }
   return (data as Conversation | null) ?? null;
-}
-
-// Al ENVIAR un correo (Mailing o Leads), el destinatario es un lead que se
-// está contactando: debe existir en el CRM para poder darle seguimiento.
-// Busca por correo en cualquier canal (prioriza el de actividad más
-// reciente) y, si no existe, lo crea en el canal 'api' con la etiqueta
-// 'mailing' para poder filtrarlo en la sección Leads.
-export async function ensureLeadForEmail(
-  orgId: number,
-  rawEmail: string
-): Promise<{ id: number; isNew: boolean }> {
-  const sb = getSupabase();
-  // El correo se normaliza a minúsculas: la dirección es case-insensitive en
-  // la práctica y así el lead se encuentra aunque el operador lo tecleara con
-  // mayúsculas. La búsqueda usa ilike (con comodines escapados) para casar
-  // filas existentes guardadas con otro casing antes de esta normalización.
-  const email = rawEmail.trim().toLowerCase();
-  const emailPattern = email.replace(/[\\%_]/g, (c) => `\\${c}`);
-  const { data: byEmail, error: e1 } = await sb
-    .from("conversations")
-    .select("id")
-    .eq("org_id", orgId)
-    .ilike("email", emailPattern)
-    .order("last_message_at", { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle();
-  if (e1) fail("find lead by email", e1.message);
-  if (byEmail) return { id: (byEmail as { id: number }).id, isNew: false };
-
-  // Leads 'api' viejos creados con el correo como external_id pero con la
-  // columna email vacía: son el mismo lead — se rellena y se reutiliza.
-  const { data: byExt, error: e2 } = await sb
-    .from("conversations")
-    .select("id, email")
-    .eq("org_id", orgId)
-    .eq("channel", "api")
-    .ilike("external_id", emailPattern)
-    .maybeSingle();
-  if (e2) fail("find lead by external_id", e2.message);
-  if (byExt) {
-    const row = byExt as { id: number; email: string | null };
-    if (!row.email) await updateLeadFields(row.id, { email }).catch(() => undefined);
-    return { id: row.id, isNew: false };
-  }
-
-  const convo = await getOrCreateConversation(orgId, "api", email);
-  const tags = Array.isArray(convo.tags) ? convo.tags : [];
-  await updateLeadFields(convo.id, {
-    email,
-    ...(tags.includes("mailing") ? {} : { tags: [...tags, "mailing"] }),
-  }).catch(() => undefined);
-  // Si getOrCreateConversation devolvió una fila vieja (carrera), su email
-  // vacío igual delata que nunca se había contactado por correo.
-  return { id: convo.id, isNew: !convo.email };
-}
-
-// Correos del lead para el hilo conversacional: todos los de la cola
-// dirigidos a su dirección (dedupe por email = 1 lead por org, así que basta
-// filtrar por org_id + to_email). Orden cronológico. No trae el html completo
-// de golpe si son muchos; el resumen a texto se hace en la ruta.
-export interface LeadEmailRow {
-  id: number;
-  to_email: string;
-  subject: string;
-  html: string;
-  sent: number;
-  error: string | null;
-  reply_to?: string | null;
-  scheduled_at: number | null;
-  sent_at: number | null;
-  created_at: number;
-}
-
-export async function listLeadEmails(
-  orgId: number,
-  email: string,
-  limit = 100
-): Promise<LeadEmailRow[]> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("email_queue")
-    .select("id, to_email, subject, html, sent, error, reply_to, scheduled_at, sent_at, created_at")
-    .eq("org_id", orgId)
-    .eq("to_email", email.trim().toLowerCase())
-    .order("created_at", { ascending: true })
-    .order("id", { ascending: true })
-    .limit(limit);
-  if (error) {
-    // reply_to sin migrar: reintenta sin esa columna (mismo apaño que el resto).
-    if (/reply_to/i.test(error.message)) {
-      const retry = await sb
-        .from("email_queue")
-        .select("id, to_email, subject, html, sent, error, scheduled_at, sent_at, created_at")
-        .eq("org_id", orgId)
-        .eq("to_email", email.trim().toLowerCase())
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .limit(limit);
-      if (retry.error) fail("list lead emails", retry.error.message);
-      return (retry.data ?? []) as LeadEmailRow[];
-    }
-    fail("list lead emails", error.message);
-  }
-  return (data ?? []) as LeadEmailRow[];
-}
-
-// ── Correo entrante (bandeja info@ del CRM) ─────────────────
-// Los correos que llegan al dominio (Resend Inbound → webhook) se guardan
-// aquí enlazados a su lead; el hilo del CRM los muestra como recibidos.
-
-export interface InboundEmailRow {
-  id: number;
-  org_id: number;
-  conversation_id: number;
-  message_id: string;
-  from_email: string;
-  from_name: string | null;
-  to_email: string;
-  subject: string;
-  body_text: string;
-  body_html: string | null;
-  created_at: number;
-}
-
-// Inserta con dedupe por (org, message_id): los webhooks se reintentan y no
-// deben duplicar el hilo. Devuelve null si el mensaje ya estaba guardado.
-export async function insertInboundEmail(
-  row: Omit<InboundEmailRow, "id" | "created_at">
-): Promise<InboundEmailRow | null> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("email_inbound")
-    .upsert(row, { onConflict: "org_id,message_id", ignoreDuplicates: true })
-    .select()
-    .maybeSingle();
-  if (error) fail("insert inbound email", error.message);
-  return (data as InboundEmailRow | null) ?? null;
-}
-
-export async function listInboundEmails(
-  conversationId: number,
-  limit = 200
-): Promise<InboundEmailRow[]> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("email_inbound")
-    .select("*")
-    .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true })
-    .order("id", { ascending: true })
-    .limit(limit);
-  if (error) fail("list inbound emails", error.message);
-  return (data ?? []) as InboundEmailRow[];
-}
-
-// Un correo entrante es actividad del lead: sube el hilo en la lista de
-// conversaciones y lo deja "esperando respuesta" (last_user_message_at).
-export async function touchConversationInbound(conversationId: number): Promise<void> {
-  const sb = getSupabase();
-  const now = epoch();
-  const { error } = await sb
-    .from("conversations")
-    .update({ last_message_at: now, last_user_message_at: now })
-    .eq("id", conversationId);
-  if (error) fail("touch conversation inbound", error.message);
 }
 
 // ── Claves de la API pública del CRM ────────────────────────

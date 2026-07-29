@@ -5,16 +5,13 @@ import {
   respondToInbound,
   type InboundMessage,
 } from "@/lib/reply-engine";
-import { updateLeadFields } from "@/lib/db";
 import {
-  fetchProfileName,
   getAllOrgsChannelSettingsCached,
   getWebhookVerifyToken,
   resolveOrgForEvent,
   sendChannelText,
   verifyMetaSignature,
 } from "@/lib/meta";
-import type { Channel } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
 
@@ -34,11 +31,6 @@ export async function GET(req: NextRequest) {
 
 // ── Tipos mínimos de los eventos que consumimos ─────────────
 
-interface MessengerEvent {
-  sender?: { id?: string };
-  message?: { mid?: string; text?: string; is_echo?: boolean };
-}
-
 interface WhatsAppApiMessage {
   from?: string;
   id?: string;
@@ -49,12 +41,10 @@ interface WhatsAppApiMessage {
 interface MetaWebhookPayload {
   object?: string;
   entry?: Array<{
-    // Id del DESTINATARIO del batch: page id (Messenger) o IG user id
-    // (Instagram) — la llave para enrutar el evento a su organización.
-    id?: string;
-    messaging?: MessengerEvent[];
     changes?: Array<{
       value?: {
+        // phone_number_id del DESTINATARIO: la llave para enrutar el evento
+        // a su organización.
         metadata?: { phone_number_id?: string };
         messages?: WhatsAppApiMessage[];
         contacts?: Array<{ profile?: { name?: string }; wa_id?: string }>;
@@ -114,45 +104,10 @@ function channelEnabledForOrg(
 }
 
 // Extrae los mensajes soportados del payload como InboundMessage, resolviendo
-// la ORGANIZACIÓN de cada entry por el id del destinatario.
+// la ORGANIZACIÓN de cada entry por el phone_number_id del destinatario.
 async function extractInbound(payload: MetaWebhookPayload): Promise<InboundMessage[]> {
   const out: InboundMessage[] = [];
   const allRows = await getAllOrgsChannelSettingsCached();
-
-  if (payload.object === "page" || payload.object === "instagram") {
-    const channel: Channel = payload.object === "page" ? "messenger" : "instagram";
-    for (const entry of payload.entry ?? []) {
-      const orgId = await resolveOrgForEvent(
-        channel as "messenger" | "instagram",
-        entry.id ?? ""
-      );
-      if (!channelEnabledForOrg(allRows, orgId, channel)) {
-        // Aviso FUERTE: descartar en silencio perdía mensajes durante el
-        // onboarding (eventos que caen a la agencia con el canal apagado).
-        console.warn(
-          `[webhook] ⚠️ Evento de ${channel} para '${entry.id}' descartado: la organización ` +
-            `${orgId} tiene el canal deshabilitado. Si es de un cliente, prueba la conexión ` +
-            `de su canal (registra su ID) o completa el campo de ID manual en Canales.`
-        );
-        continue;
-      }
-      for (const event of entry.messaging ?? []) {
-        const senderId = event.sender?.id;
-        const text = event.message?.text;
-        // is_echo = mensajes enviados por la propia página; se ignoran.
-        if (!senderId || !text || event.message?.is_echo) continue;
-        out.push({
-          orgId,
-          channel,
-          externalId: senderId,
-          text,
-          dedupeKey: event.message?.mid ?? null,
-          send: (reply) => sendChannelText(orgId, channel, senderId, reply),
-        });
-      }
-    }
-    return out;
-  }
 
   if (payload.object === "whatsapp_business_account") {
     for (const entry of payload.entry ?? []) {
@@ -205,21 +160,7 @@ async function persistPhase(payload: MetaWebhookPayload): Promise<number> {
       if (!persisted) continue; // duplicado
 
       // Fase 2 en segundo plano, encadenada al mismo contacto.
-      void enqueueForContact(chainKey, async () => {
-        // Nombre del perfil solo si aún no lo tenemos (una llamada por lead,
-        // no por mensaje).
-        if (!persisted.name && (msg.channel === "messenger" || msg.channel === "instagram")) {
-          const name = await fetchProfileName(msg.orgId, msg.channel, msg.externalId);
-          if (name) {
-            try {
-              await updateLeadFields(persisted.conversationId, { name });
-            } catch (err) {
-              console.error("[webhook] No se pudo guardar el nombre del perfil:", err);
-            }
-          }
-        }
-        await respondToInbound(persisted, msg);
-      }).catch((err) =>
+      void enqueueForContact(chainKey, () => respondToInbound(persisted, msg)).catch((err) =>
         console.error(`[webhook] Error respondiendo a ${chainKey}:`, err)
       );
     } catch (err) {

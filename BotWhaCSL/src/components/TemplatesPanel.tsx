@@ -242,8 +242,8 @@ function KeywordTriggersCard() {
             Palabras clave con respuesta automática
           </h2>
           <p className="mt-1 max-w-2xl text-xs text-neutral-400">
-            Si un cliente escribe la palabra en el chat de cualquier canal (WhatsApp, Instagram,
-            Messenger, WhatsApp API), el bot responde al instante con el contenido asignado —
+            Si un cliente escribe la palabra en el chat de cualquier canal (WhatsApp o
+            WhatsApp API), el bot responde al instante con el contenido asignado —
             sin pasar por la IA. No distingue mayúsculas, tildes ni signos: «¡INFO!» dispara
             igual que «info». Los cambios aplican solos en menos de 15 segundos tras guardar.
           </p>

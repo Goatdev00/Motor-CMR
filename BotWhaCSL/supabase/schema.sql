@@ -27,24 +27,6 @@ create table if not exists messages (
 create index if not exists idx_messages_conv
   on messages (conversation_id, created_at);
 
--- Fila única que actúa de "buzón" entre el proceso bot y el de Next.js.
--- restart_requested reemplaza al archivo flag ./data/.restart del diseño
--- original: como la DB es remota, funciona incluso si bot y dashboard
--- corren en máquinas distintas.
-create table if not exists connection_state (
-  id                 smallint primary key check (id = 1),
-  status             text not null default 'disconnected'
-                     check (status in ('disconnected', 'qr', 'connecting', 'connected')),
-  qr_string          text,
-  phone              text,
-  restart_requested  boolean not null default false,
-  updated_at         bigint not null default extract(epoch from now())::bigint
-);
-
-insert into connection_state (id, status)
-values (1, 'disconnected')
-on conflict (id) do nothing;
-
 -- Cola de mensajes humanos (dashboard → bot → WhatsApp).
 -- sent: 0 = pendiente, 1 = enviado, 2 = descartado tras 5 intentos fallidos.
 -- Sin FK a conversations a propósito: los enviados (sent=1) quedan como
@@ -452,13 +434,13 @@ $$;
 
 -- ============================================================
 -- MULTICANAL (aditivo e idempotente)
--- Canales: 'whatsapp' (Baileys/QR), 'whatsapp_api' (Meta Cloud API),
--- 'messenger' (Facebook), 'instagram' (DMs).
+-- Canales: 'whatsapp' (Baileys/QR), 'whatsapp_api' (Meta Cloud API,
+-- enrutado por phone_number_id) y 'api' (API pública del CRM).
 -- ============================================================
 
 -- external_id: identificador del contacto en su canal (teléfono para
--- WhatsApp, PSID para Messenger, IGSID para Instagram). phone pasa a ser
--- opcional (en IG/FB no se conoce el número).
+-- WhatsApp). phone pasa a ser opcional (los leads del canal 'api'
+-- pueden llegar sin número).
 alter table conversations add column if not exists channel text not null default 'whatsapp';
 alter table conversations add column if not exists external_id text;
 update conversations set external_id = phone where external_id is null;
@@ -470,7 +452,7 @@ do $$ begin
   end if;
   if not exists (select 1 from pg_constraint where conname = 'conversations_channel_check') then
     alter table conversations add constraint conversations_channel_check
-      check (channel in ('whatsapp', 'whatsapp_api', 'messenger', 'instagram'));
+      check (channel in ('whatsapp', 'whatsapp_api', 'api'));
   end if;
 end $$;
 
@@ -630,37 +612,6 @@ create table if not exists app_settings (
 alter table app_settings enable row level security;
 
 -- ============================================================
--- MAILING (aditivo e idempotente)
--- La cuenta SMTP se guarda en channel_settings (fila 'email'); esta
--- cola la procesa el proceso bot respetando los límites configurados.
--- sent: 0 pendiente, 1 enviado, 2 fallido definitivo, 3 enviando.
--- ============================================================
-
-create table if not exists email_queue (
-  id            bigint generated always as identity primary key,
-  to_email      text not null,
-  to_name       text,
-  subject       text not null,
-  html          text not null,
-  batch_id      text,
-  sent          smallint not null default 0,
-  attempts      integer not null default 0,
-  error         text,
-  scheduled_at  bigint,
-  sent_at       bigint,
-  created_at    bigint not null default extract(epoch from now())::bigint
-);
-
-create index if not exists idx_email_queue_pending on email_queue (sent, created_at);
-create index if not exists idx_email_queue_sent_at on email_queue (sent_at);
-
--- Responder-a opcional por correo (sección Leads: el operador decide a qué
--- buzón llegan las respuestas de cada envío).
-alter table email_queue add column if not exists reply_to text;
-
-alter table email_queue enable row level security;
-
--- ============================================================
 -- CALENDARIO (aditivo e idempotente)
 -- Eventos creados desde la pestaña Calendario del dashboard.
 -- Las fechas son epoch en segundos (como el resto del schema);
@@ -712,9 +663,9 @@ alter table calendar_events enable row level security;
 -- miembro vive en app_settings ('stage_routing').
 -- ============================================================
 
--- Cuentas de WhatsApp vinculables por QR. Cada una reemplaza a la vieja
--- fila única de connection_state: el bot mantiene una sesión por cuenta
--- habilitada y escribe aquí su estado/QR.
+-- Cuentas de WhatsApp vinculables por QR. El bot mantiene una sesión por
+-- cuenta habilitada y escribe aquí su estado/QR (incluida la señal
+-- restart_requested del dashboard).
 create table if not exists wa_accounts (
   id                 bigint generated always as identity primary key,
   label              text not null,
@@ -868,7 +819,7 @@ $$;
 -- ── Acceso con usuario y contraseña ─────────────────────────
 -- El dashboard abre con login. Las credenciales viven en team_members
 -- (hash bcrypt vía pgcrypto, generado y verificado EN Postgres — el hash
--- jamás viaja al front). La cuenta maestra es goatdev (rol ADMIN):
+-- jamás viaja al front). La cuenta maestra es admin (rol ADMIN):
 -- CAMBIA SU CONTRASEÑA tras el primer ingreso.
 create extension if not exists pgcrypto;
 
@@ -879,12 +830,12 @@ create unique index if not exists idx_team_members_username
   on team_members (lower(username)) where username is not null;
 
 -- Cuenta maestra SOLO como bootstrap: se crea únicamente si NO existe
--- ningún Admin con acceso real (activo, con usuario y contraseña). Antes la
--- guarda miraba solo el nombre 'goatdev': renombrar/borrar esa cuenta hacía
--- que cada re-ejecución la RESUCITARA con la contraseña por defecto —
--- una puerta trasera conocida en una plataforma multi-cliente.
+-- ningún Admin con acceso real (activo, con usuario y contraseña). La guarda
+-- mira el rol y no el nombre: renombrar/borrar la cuenta no hace que cada
+-- re-ejecución la RESUCITE con la contraseña por defecto. La contraseña
+-- sembrada DEBE cambiarse tras el primer login.
 insert into team_members (name, role, username, password_hash)
-select 'Goatdev', 'ADMIN', 'goatdev', crypt('goatdev123', gen_salt('bf'))
+select 'Administrador', 'ADMIN', 'admin', crypt('admin123', gen_salt('bf'))
 where not exists (
   select 1 from team_members
   where role = 'ADMIN' and active
@@ -1054,17 +1005,16 @@ $$;
 -- ============================================================
 
 -- Alarmas programadas (renovaciones de suscripción, pagos, reuniones...):
--- el bot las dispara a su hora por WhatsApp (outbox kind='notify') o por
--- correo (email_queue), con recurrencia opcional.
+-- el bot las dispara a su hora por WhatsApp (outbox kind='notify'),
+-- con recurrencia opcional.
 create table if not exists alarms (
   id               bigint generated always as identity primary key,
   title            text not null,
   message          text not null default '',
   kind             text not null default 'OTRO'
                    check (kind in ('SUSCRIPCION', 'PAGO', 'REUNION', 'TAREA', 'OTRO')),
-  via              text not null check (via in ('whatsapp', 'email')),
+  via              text not null check (via in ('whatsapp')),
   to_phone         text,
-  to_email         text,
   -- Lead relacionado (opcional, para contexto). Si se borra, la alarma queda.
   conversation_id  bigint references conversations(id) on delete set null,
   next_fire_at     bigint not null,
@@ -1106,7 +1056,7 @@ do $$ begin
     alter table conversations drop constraint conversations_channel_check;
   end if;
   alter table conversations add constraint conversations_channel_check
-    check (channel in ('whatsapp', 'whatsapp_api', 'messenger', 'instagram', 'api'));
+    check (channel in ('whatsapp', 'whatsapp_api', 'api'));
 end $$;
 
 -- ── Seguridad ───────────────────────────────────────────────
@@ -1116,7 +1066,6 @@ end $$;
 
 alter table conversations enable row level security;
 alter table messages enable row level security;
-alter table connection_state enable row level security;
 alter table outbox enable row level security;
 alter table lead_notes enable row level security;
 alter table lead_events enable row level security;
@@ -1186,7 +1135,6 @@ alter table app_settings    add column if not exists org_id bigint not null defa
 alter table quick_replies   add column if not exists org_id bigint not null default 1 references organizations(id);
 alter table alarms          add column if not exists org_id bigint not null default 1 references organizations(id);
 alter table calendar_events add column if not exists org_id bigint not null default 1 references organizations(id);
-alter table email_queue     add column if not exists org_id bigint not null default 1 references organizations(id);
 alter table outbox          add column if not exists org_id bigint not null default 1 references organizations(id);
 alter table api_keys        add column if not exists org_id bigint not null default 1 references organizations(id);
 
@@ -1217,7 +1165,6 @@ create unique index if not exists idx_conversations_org_channel_ext
 
 create index if not exists idx_conversations_org on conversations (org_id);
 create index if not exists idx_outbox_org on outbox (org_id, sent);
-create index if not exists idx_email_queue_org on email_queue (org_id, sent);
 
 -- ── RPCs con propagación de organización ────────────────────
 
@@ -1451,31 +1398,3 @@ $$;
 
 revoke execute on function list_conversations(bigint) from public, anon, authenticated;
 grant execute on function list_conversations(bigint) to service_role;
-
--- ============================================================
--- CORREO ENTRANTE (bandeja info@ dentro del CRM)
--- Aditivo e idempotente. Los correos que llegan al dominio (vía
--- Resend Inbound → webhook /api/webhooks/email) se guardan aquí
--- enlazados a su lead, y el hilo del CRM los muestra como
--- mensajes recibidos.
--- ============================================================
-
-create table if not exists email_inbound (
-  id               bigint generated always as identity primary key,
-  org_id           bigint not null default 1 references organizations(id),
-  conversation_id  bigint not null references conversations(id) on delete cascade,
-  -- Id del mensaje en el proveedor (dedupe: los webhooks se reintentan).
-  message_id       text not null,
-  from_email       text not null,
-  from_name        text,
-  to_email         text not null,
-  subject          text not null default '',
-  body_text        text not null default '',
-  body_html        text,
-  created_at       bigint not null default extract(epoch from now())::bigint
-);
-
-create unique index if not exists idx_email_inbound_org_msg
-  on email_inbound (org_id, message_id);
-create index if not exists idx_email_inbound_conv
-  on email_inbound (conversation_id, created_at);

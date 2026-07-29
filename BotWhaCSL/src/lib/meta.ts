@@ -1,31 +1,19 @@
-// Cliente de la Graph API de Meta: envío de mensajes por Messenger,
-// Instagram DM y WhatsApp Cloud API, verificación de firma de webhooks y
-// pruebas de conexión. La configuración (tokens) vive en channel_settings
-// POR ORGANIZACIÓN: cada cliente de la agencia conecta sus propios canales.
-// El webhook y el App Secret son de la app de Meta de la AGENCIA (modelo
-// "proveedor de tecnología"): una sola app, muchos clientes conectados.
+// Cliente de la Graph API de Meta: envío de mensajes por WhatsApp Cloud
+// API, verificación de firma de webhooks y pruebas de conexión. La
+// configuración (tokens) vive en channel_settings POR ORGANIZACIÓN: cada
+// cliente de la agencia conecta su propio canal. El webhook y el App Secret
+// son de la app de Meta de la AGENCIA (modelo "proveedor de tecnología"):
+// una sola app, muchos clientes conectados.
 import crypto from "node:crypto";
 import {
   AGENCY_ORG_ID,
   getAllChannelSettings,
   listAllChannelSettings,
-  upsertChannelSettings,
   type ChannelSettingsRow,
 } from "./db";
 import type { Channel } from "./channels";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
-// API de Instagram con "inicio de sesión de Instagram" (apps nuevas de Meta):
-// mismo contrato de mensajería pero en otro host y con tokens IGAA….
-const IG_GRAPH = "https://graph.instagram.com/v21.0";
-
-// Los tokens de página empiezan por EAA…; los del inicio de sesión de
-// Instagram por IGAA…. Según el tipo, los DMs de Instagram se hablan con
-// graph.facebook.com (plataforma Messenger, apps antiguas) o con
-// graph.instagram.com (apps nuevas).
-function instagramApiBase(token: string): string {
-  return token.startsWith("IG") ? IG_GRAPH : GRAPH;
-}
 
 // Cache corto: el webhook y el outbox leen settings en cada mensaje; 15s de
 // TTL evita golpear Supabase sin retrasar demasiado un cambio de token.
@@ -85,27 +73,6 @@ async function graphFetch(url: string, init: RequestInit, context: string): Prom
 
 // ── Envío de texto por canal ────────────────────────────────
 
-async function sendPageMessage(
-  pageToken: string,
-  recipientId: string,
-  text: string,
-  base: string = GRAPH
-): Promise<void> {
-  await graphFetch(
-    `${base}/me/messages?access_token=${encodeURIComponent(pageToken)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        messaging_type: "RESPONSE",
-        message: { text },
-      }),
-    },
-    "send"
-  );
-}
-
 async function sendWhatsAppApiMessage(
   phoneNumberId: string,
   accessToken: string,
@@ -131,7 +98,7 @@ async function sendWhatsAppApiMessage(
   );
 }
 
-// Envía texto por cualquier canal de Meta CON LOS TOKENS DE LA ORGANIZACIÓN
+// Envía texto por WhatsApp Cloud API CON LOS TOKENS DE LA ORGANIZACIÓN
 // dueña de la conversación. Para 'whatsapp' (Baileys) NO usar esto: ese
 // envío requiere el socket del proceso bot.
 export async function sendChannelText(
@@ -142,14 +109,6 @@ export async function sendChannelText(
 ): Promise<void> {
   const rows = await getChannelSettingsCached(orgId);
   switch (channel) {
-    case "messenger":
-      await sendPageMessage(requireConfig(rows, "messenger", "page_access_token"), recipientId, text);
-      return;
-    case "instagram": {
-      const token = requireConfig(rows, "instagram", "page_access_token");
-      await sendPageMessage(token, recipientId, text, instagramApiBase(token));
-      return;
-    }
     case "whatsapp_api":
       await sendWhatsAppApiMessage(
         requireConfig(rows, "whatsapp_api", "phone_number_id"),
@@ -165,23 +124,17 @@ export async function sendChannelText(
 
 // ── Webhook ─────────────────────────────────────────────────
 
-// Valida X-Hub-Signature-256 contra el app_secret configurado — y, si está
-// configurado, también contra el "Secreto de la app de Instagram"
-// (ig_app_secret): la API nueva de Instagram (inicio de sesión de Instagram)
-// firma sus webhooks con SU secreto, distinto del de la app de Facebook.
-// Si no hay ningún secreto guardado, se acepta (recomendado configurarlos
-// en producción).
+// Valida X-Hub-Signature-256 contra el app_secret configurado. Si no hay
+// ningún secreto guardado, se acepta (recomendado configurarlo en
+// producción).
 export async function verifyMetaSignature(
   rawBody: string,
   signatureHeader: string | null
 ): Promise<boolean> {
   // El webhook es de la app de Meta de la AGENCIA (una sola app para todos
-  // los clientes): sus secretos viven en la organización 1.
+  // los clientes): su secreto vive en la organización 1.
   const rows = await getChannelSettingsCached(AGENCY_ORG_ID);
-  const secrets = [
-    rows["meta_webhook"]?.config?.app_secret,
-    rows["meta_webhook"]?.config?.ig_app_secret,
-  ].filter((s): s is string => !!s);
+  const secrets = [rows["meta_webhook"]?.config?.app_secret].filter((s): s is string => !!s);
   if (secrets.length === 0) return true;
   if (!signatureHeader?.startsWith("sha256=")) return false;
   const received = signatureHeader.slice("sha256=".length);
@@ -210,18 +163,16 @@ export async function getWebhookVerifyToken(): Promise<string | null> {
 
 // ── Enrutamiento de eventos del webhook a su organización ───
 // La app de Meta es una sola (de la agencia), pero cada evento trae el ID
-// del DESTINATARIO: page id (Messenger), IG user id (Instagram) o
-// phone_number_id (WhatsApp API). Se busca la organización cuyo canal tiene
-// ese ID registrado (page_id / ig_user_id se guardan solos al probar la
-// conexión). Fallback: si UNA sola organización tiene el canal habilitado,
-// es suya; si no, la agencia (org 1) con aviso en logs.
+// del DESTINATARIO: el phone_number_id (WhatsApp API). Se busca la
+// organización cuyo canal tiene ese ID registrado en su config. Fallback:
+// si UNA sola organización tiene el canal habilitado, es suya; si no, la
+// agencia (org 1) con aviso en logs.
 export async function resolveOrgForEvent(
-  channel: "messenger" | "instagram" | "whatsapp_api",
+  channel: "whatsapp_api",
   recipientId: string
 ): Promise<number> {
   const rows = await getAllOrgsChannelSettingsCached();
-  const idKey =
-    channel === "messenger" ? "page_id" : channel === "instagram" ? "ig_user_id" : "phone_number_id";
+  const idKey = "phone_number_id";
   const channelRows = rows.filter((r) => r.channel === channel);
 
   // Match por ID registrado. Si dos organizaciones tienen el mismo ID (una
@@ -239,59 +190,9 @@ export async function resolveOrgForEvent(
   console.warn(
     `[webhook] Evento de ${channel} para '${recipientId}' sin organización identificable ` +
       `(${candidates.length} organizaciones con el canal activo sin ID registrado) — se asigna ` +
-      `a la agencia. Prueba la conexión del canal en la organización correcta para registrar su ID.`
+      `a la agencia. Configura el phone_number_id del canal en la organización correcta.`
   );
   return AGENCY_ORG_ID;
-}
-
-// Guarda el ID del destinatario en la config del canal (best-effort): así
-// el enrutamiento del webhook identifica a la organización sin ambigüedad.
-async function rememberChannelId(
-  orgId: number,
-  channel: string,
-  key: string,
-  value: string
-): Promise<void> {
-  try {
-    const rows = await getAllChannelSettings(orgId);
-    const row = rows[channel];
-    if (!row || row.config?.[key] === value) return;
-    await upsertChannelSettings(orgId, channel, row.enabled, { ...row.config, [key]: value });
-    invalidateChannelSettingsCache();
-  } catch (err) {
-    console.error(`[meta] No se pudo registrar ${key} del canal ${channel}:`, err);
-  }
-}
-
-// Nombre del contacto, best-effort (para la lista y el CRM).
-export async function fetchProfileName(
-  orgId: number,
-  channel: Channel,
-  userId: string
-): Promise<string | null> {
-  try {
-    const rows = await getChannelSettingsCached(orgId);
-    const token =
-      channel === "instagram"
-        ? rows["instagram"]?.config?.page_access_token
-        : rows["messenger"]?.config?.page_access_token;
-    if (!token) return null;
-    const base = channel === "instagram" ? instagramApiBase(token) : GRAPH;
-    const fields = channel === "instagram" ? "name,username" : "first_name,last_name,name";
-    const body = (await graphFetch(
-      `${base}/${userId}?fields=${fields}&access_token=${encodeURIComponent(token)}`,
-      {},
-      "profile"
-    )) as { name?: string; username?: string; first_name?: string; last_name?: string };
-    return (
-      body.name ||
-      body.username ||
-      [body.first_name, body.last_name].filter(Boolean).join(" ") ||
-      null
-    );
-  } catch {
-    return null;
-  }
 }
 
 // ── Prueba de conexión desde el dashboard ───────────────────
@@ -340,76 +241,6 @@ export async function testChannel(
     };
   }
   try {
-    if (channel === "instagram") {
-      const token = requireConfig(rows, "instagram", "page_access_token");
-      // Token IGAA… (API de Instagram con inicio de sesión de Instagram):
-      // se valida contra graph.instagram.com — es el camino de apps nuevas.
-      if (token.startsWith("IG")) {
-        const body = (await graphFetch(
-          `${IG_GRAPH}/me?fields=user_id,username,name&access_token=${encodeURIComponent(token)}`,
-          {},
-          "test"
-        )) as { user_id?: string | number; username?: string; name?: string };
-        // Registrar el IG user id: es la llave con la que el webhook enruta
-        // los DMs de esta cuenta a ESTA organización.
-        if (body.user_id) {
-          await rememberChannelId(orgId, "instagram", "ig_user_id", String(body.user_id));
-        }
-        return {
-          ok: true,
-          detail: `Conectado a Instagram como @${body.username ?? "?"}${body.name ? ` (${body.name})` : ""}`,
-        };
-      }
-      // Token de página (EAA…): cae al flujo de la plataforma Messenger.
-    }
-    if (channel === "messenger" || channel === "instagram") {
-      const token = requireConfig(rows, channel, "page_access_token");
-      try {
-        const body = (await graphFetch(
-          `${GRAPH}/me?access_token=${encodeURIComponent(token)}`,
-          {},
-          "test"
-        )) as { name?: string; id?: string };
-        // Registrar el page id: llave del enrutamiento del webhook.
-        if (channel === "messenger" && body.id) {
-          await rememberChannelId(orgId, "messenger", "page_id", body.id);
-        }
-        return { ok: true, detail: `Conectado como "${body.name ?? body.id}"` };
-      } catch {
-        // Leer la página (GET /me) exige pages_read_engagement o funciones
-        // que pasan por revisión de Meta — pero el bot NO lee la página:
-        // envía mensajes (pages_messaging). Los tokens generados desde los
-        // "casos de uso" nuevos suelen traer solo lo de mensajería, así que
-        // se valida contra el endpoint de mensajería antes de dar error.
-        await graphFetch(
-          `${GRAPH}/me/messenger_profile?access_token=${encodeURIComponent(token)}`,
-          {},
-          "test"
-        );
-        // El ID de la página (llave del enrutamiento del webhook) se
-        // intenta vía debug_token (profile_id): funciona incluso con tokens
-        // de solo mensajería que no pueden leer GET /me.
-        if (channel === "messenger") {
-          try {
-            const dbg = (await graphFetch(
-              `${GRAPH}/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`,
-              {},
-              "test"
-            )) as { data?: { profile_id?: string } };
-            if (dbg.data?.profile_id) {
-              await rememberChannelId(orgId, "messenger", "page_id", dbg.data.profile_id);
-            }
-          } catch {
-            /* best-effort: el campo manual page_id del dashboard cubre el resto */
-          }
-        }
-        return {
-          ok: true,
-          detail:
-            "Token válido para mensajería. (No permite leer el nombre de la página — falta pages_read_engagement — pero eso no afecta el envío ni la recepción de mensajes.)",
-        };
-      }
-    }
     if (channel === "whatsapp_api") {
       const phoneNumberId = requireConfig(rows, "whatsapp_api", "phone_number_id");
       const token = requireConfig(rows, "whatsapp_api", "access_token");

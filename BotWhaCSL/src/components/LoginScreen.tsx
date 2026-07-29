@@ -19,7 +19,7 @@ interface Props {
 }
 
 // Puerta de entrada del dashboard: usuario y contraseña (los gestiona el
-// Admin en la pestaña Equipo). La cuenta maestra inicial es goatdev.
+// Admin en la pestaña Equipo). La cuenta maestra inicial es admin.
 export default function LoginScreen({ onLogin }: Props) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");

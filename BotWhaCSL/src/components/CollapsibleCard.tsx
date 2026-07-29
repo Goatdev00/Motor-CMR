@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
-// Tarjeta contraíble para los paneles de configuración (Canales, Mailing):
+// Tarjeta contraíble para los paneles de configuración (Canales):
 // las que ya quedaron configuradas arrancan CONTRAÍDAS (solo el encabezado
 // con su chip "✓ Configurado") para despejar la vista; clic en el título
 // expande/contrae. `completed` suele llegar tras cargar del servidor, por

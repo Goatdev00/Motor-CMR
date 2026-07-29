@@ -22,7 +22,7 @@ const btnGhost =
 const labelClass = "mb-1 block text-[11px] font-medium text-neutral-500";
 
 // Canales con respuesta del bot ('api' no tiene canal de salida).
-const REPLY_CHANNELS: Channel[] = ["whatsapp", "whatsapp_api", "messenger", "instagram"];
+const REPLY_CHANNELS: Channel[] = ["whatsapp", "whatsapp_api"];
 
 const DRAFT_KEY = "equipo-ia-borrador";
 

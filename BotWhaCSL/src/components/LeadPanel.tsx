@@ -22,8 +22,6 @@ const EVENT_LABELS: Record<string, string> = {
   handoff: "Derivado a humano",
   assigned: "Asignación",
   import: "Importado",
-  email: "Correo enviado",
-  email_in: "Correo recibido",
 };
 
 // Acepta formatos locales ("2.500.000", "1,5", "$ 3000"). Devuelve null para
@@ -412,8 +410,8 @@ export default function LeadPanel({ lead, onLeadChanged, width = 320 }: Props) {
           </p>
         )}
 
-        {/* Score manual: útil sobre todo en leads de correo, que no tienen
-            conversación que la IA pueda analizar. Comparte campo con el de IA. */}
+        {/* Score manual: útil en leads sin conversación que la IA pueda
+            analizar. Comparte campo con el de IA. */}
         <div className="flex items-center gap-2">
           <input
             type="number"

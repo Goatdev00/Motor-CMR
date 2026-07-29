@@ -7,12 +7,10 @@ import LoginScreen, { type SessionUser } from "./LoginScreen";
 import ConversationList from "./ConversationList";
 import ConversationPanel from "./ConversationPanel";
 import CrmBoard from "./CrmBoard";
-import LeadsHubPanel from "./LeadsHubPanel";
 import TemplatesPanel from "./TemplatesPanel";
 import SettingsPanel from "./SettingsPanel";
 import TestChatPanel from "./TestChatPanel";
 import ChannelSettings from "./ChannelSettings";
-import MailingPanel from "./MailingPanel";
 import CalendarPanel from "./CalendarPanel";
 import AlarmsPanel from "./AlarmsPanel";
 import TeamPanel from "./TeamPanel";
@@ -31,8 +29,6 @@ export interface ConnectionPayload {
 const VIEW_TITLES: Record<DashboardView, string> = {
   chats: "Chats",
   crm: "CRM",
-  leads: "Leads",
-  mailing: "Mailing",
   templates: "Plantillas",
   testchat: "Chat de prueba",
   calendar: "Calendario",
@@ -230,10 +226,6 @@ export default function ConnectionGate() {
         />
         {view === "crm" ? (
           <CrmBoard onOpenLead={handleOpenLead} />
-        ) : view === "leads" ? (
-          <LeadsHubPanel onOpenLead={handleOpenLead} />
-        ) : view === "mailing" ? (
-          <MailingPanel />
         ) : view === "templates" ? (
           <TemplatesPanel />
         ) : view === "testchat" ? (

@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
 
     const system =
       kind === "agent"
-        ? "Eres un ingeniero de prompts experto en bots de ventas por chat (WhatsApp/Instagram/Messenger). " +
+        ? "Eres un ingeniero de prompts experto en bots de ventas por chat (WhatsApp). " +
           "Redacta el PROMPT DE UN AGENTE ESPECIALIZADO que se SUMA al prompt principal del negocio cuando el agente atiende su tema. " +
           "Escríbelo en español, en segunda persona ('Eres...'), listo para usar, con: identidad y especialidad del agente; qué sabe y qué ofrece; " +
           "cómo responde (tono, longitud apta para chat); su objetivo comercial concreto y el llamado a la acción; y límites claros " +
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
           "Si te doy un borrador, úsalo como base: consérvale la intención y complétalo. " +
           "Si te falta información (precios, datos concretos), deja marcadores claros tipo [COMPLETAR: precio del plan] para que el operador los llene. " +
           "Devuelve SOLO el texto del prompt, sin explicaciones alrededor ni encabezados markdown. Máximo ~350 palabras."
-        : "Eres un ingeniero de prompts experto en bots de ventas por chat (WhatsApp/Instagram/Messenger). " +
+        : "Eres un ingeniero de prompts experto en bots de ventas por chat (WhatsApp). " +
           "Redacta el PROMPT PRINCIPAL del bot de un negocio: su identidad, qué es y qué vende el negocio, cómo atiende " +
           "(tono, longitud apta para chat), su objetivo comercial (calificar leads, agendar, vender), preguntas frecuentes si se deducen, " +
           "y límites claros (no inventar precios ni datos, no prometer imposibles). " +

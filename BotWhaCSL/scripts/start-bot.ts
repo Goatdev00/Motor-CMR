@@ -1,46 +1,35 @@
 // Proceso del bot: sesiones de Baileys (una por cuenta) + loop de outbox
-// multicanal + cola de correos + señales del dashboard.
+// multicanal + señales del dashboard.
 // ⚠️ env-loader DEBE ser el primer import (ver comentario en env-loader.ts).
 import "./env-loader";
 import {
   assertCrmMigration,
   claimAlarmFire,
-  claimEmail,
   claimOutboxItem,
-  countEmailsSentSince,
-  deferAlarm,
-  deferEmail,
   deferOutboxItem,
-  enqueueEmails,
   enqueueNotify,
   getConversationById,
   getDueAlarms,
-  getPendingEmails,
   getPendingOutbox,
   insertMessage,
   listAllChannelSettings,
   listTeamMembers,
   listWaAccounts,
-  markEmailSent,
   markFollowUpFailed,
   markFollowUpSent,
   markOutboxSent,
-  releaseEmailFailure,
   releaseOutboxFailure,
-  resetInFlightEmails,
   resetInFlightOutbox,
   setAlarmError,
   updateWaAccount,
   type Alarm,
   type ChannelSettingsRow,
-  type EmailQueueItem,
   type OutboxItem,
   type TeamMember,
   type WaAccount,
 } from "../src/lib/db";
 import path from "node:path";
 import fs from "node:fs";
-import { parseEmailConfig, sendEmail, textToHtml } from "../src/lib/mailer";
 import {
   anySessionOpen,
   authDirFor,
@@ -309,11 +298,9 @@ function nextAlarmFire(from: number, repeat: string): number | null {
 
 // Dispara las alarmas vencidas: reclama (condicional: si el operador la
 // reprogramó/apagó a mitad del lote, NO se dispara) y encola el aviso por
-// WhatsApp (outbox notify) o correo (email_queue) EN LA ORGANIZACIÓN de la
-// alarma. El envío real lo hacen los workers de siempre con sus reintentos.
-async function flushAlarms(
-  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null
-): Promise<void> {
+// WhatsApp (outbox notify) EN LA ORGANIZACIÓN de la alarma. El envío real
+// lo hacen los workers de siempre con sus reintentos.
+async function flushAlarms(): Promise<void> {
   let due: Alarm[];
   try {
     due = await getDueAlarms(10);
@@ -321,28 +308,6 @@ async function flushAlarms(
     return; // tabla sin migrar o blip: siguiente tick
   }
   for (const alarm of due) {
-    // Alarma por correo sin cuenta SMTP configurada/activada EN SU
-    // organización: NO se reclama (dispararía "en falso" con la cola
-    // muerta). Queda vencida con el error visible; en cuanto Mailing esté
-    // listo, el disparo sale solo.
-    if (alarm.via === "email" && settingsByOrg) {
-      const row = settingsByOrg.get(alarm.org_id)?.["email"];
-      if (!row?.enabled || parseEmailConfig(row) === null) {
-        const msg = "La cuenta de correo (pestaña Mailing) no está configurada o está apagada";
-        if (alarm.last_error !== msg) {
-          try {
-            await setAlarmError(alarm.id, msg);
-          } catch {
-            /* siguiente tick */
-          }
-        }
-        // Diferir 5 min: una alarma bloqueada no debe ocupar el lote de
-        // vencidas para siempre (inanición de las demás organizaciones).
-        deferAlarm(alarm, 300).catch(() => undefined);
-        continue;
-      }
-    }
-
     const next = nextAlarmFire(alarm.next_fire_at, alarm.repeat_every);
     let claimed = false;
     try {
@@ -364,21 +329,12 @@ async function flushAlarms(
 
     const label = ALARM_KIND_LABELS[alarm.kind] ?? "Recordatorio";
     try {
-      if (alarm.via === "whatsapp" && alarm.to_phone) {
+      if (alarm.to_phone) {
         await enqueueNotify(
           alarm.org_id,
           alarm.to_phone,
           `AGENTE · ${label}: ${alarm.title}\n\n${alarm.message}`
         );
-      } else if (alarm.via === "email" && alarm.to_email) {
-        await enqueueEmails([
-          {
-            to_email: alarm.to_email,
-            subject: `AGENTE · ${label}: ${alarm.title}`,
-            html: textToHtml(alarm.message),
-            org_id: alarm.org_id,
-          },
-        ]);
       } else {
         throw new Error("La alarma no tiene destino configurado");
       }
@@ -437,93 +393,6 @@ function groupSettingsByOrg(
   return map;
 }
 
-// ── Worker de la cola de correos (Mailing) ──────────────────
-// Ritmo base: hasta 2 correos por tick de 2s POR ORGANIZACIÓN. Cada correo
-// sale por la cuenta SMTP de SU organización, y los límites por hora/día
-// (opcionales) se cuentan por organización.
-async function flushEmailQueue(
-  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>>
-): Promise<void> {
-  // Lote generoso: se agrupa por organización y cada una toma hasta 2.
-  const pending = await getPendingEmails(40);
-  if (pending.length === 0) return;
-
-  const byOrg = new Map<number, typeof pending>();
-  for (const item of pending) {
-    const list = byOrg.get(item.org_id) ?? [];
-    list.push(item);
-    byOrg.set(item.org_id, list);
-  }
-
-  // Difiere las filas de una organización que no puede enviar ahora, para
-  // que no taponen el lote global (inanición de las demás organizaciones).
-  const deferOrg = (items: EmailQueueItem[], seconds: number) => {
-    for (const item of items) deferEmail(item.id, seconds).catch(() => undefined);
-  };
-
-  for (const [orgId, items] of byOrg) {
-    const row = settingsByOrg.get(orgId)?.["email"];
-    if (!row?.enabled) {
-      deferOrg(items, 300); // Mailing apagado: reintentar en 5 min
-      continue;
-    }
-    const config = parseEmailConfig(row);
-    if (!config) {
-      deferOrg(items, 300); // cuenta incompleta: reintentar en 5 min
-      continue;
-    }
-
-    let allowance = 2;
-    const now = Math.floor(Date.now() / 1000);
-    if (config.maxPerHour !== null) {
-      const sentLastHour = await countEmailsSentSince(now - 3600, orgId);
-      allowance = Math.min(allowance, config.maxPerHour - sentLastHour);
-    }
-    if (allowance > 0 && config.maxPerDay !== null) {
-      const sentLastDay = await countEmailsSentSince(now - 86400, orgId);
-      allowance = Math.min(allowance, config.maxPerDay - sentLastDay);
-    }
-    if (allowance <= 0) {
-      deferOrg(items, 60); // límite alcanzado: reintentar en 1 min
-      continue;
-    }
-
-    for (const item of items.slice(0, allowance)) {
-      let claimed = false;
-      try {
-        claimed = await claimEmail(item.id);
-      } catch (err) {
-        console.error(`[bot] No se pudo reclamar email #${item.id}:`, err);
-        continue;
-      }
-      if (!claimed) continue;
-
-      try {
-        await sendEmail(config, {
-          to: item.to_email,
-          toName: item.to_name,
-          subject: item.subject,
-          html: item.html,
-          replyTo: item.reply_to ?? null,
-        });
-        await markEmailSent(item.id);
-        console.log(`[bot] ✉️  Email #${item.id} (org ${orgId}) enviado a ${item.to_email}`);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[bot] Falló email #${item.id} a ${item.to_email}:`, message);
-        try {
-          const discarded = await releaseEmailFailure(item, message);
-          if (discarded) {
-            console.error(`[bot] ⚠️ Email #${item.id} descartado tras agotar reintentos`);
-          }
-        } catch (relErr) {
-          console.error(`[bot] No se pudo liberar email #${item.id}:`, relErr);
-        }
-      }
-    }
-  }
-}
-
 async function finalizeFollowup(outboxId: number, f: FollowupFinalize): Promise<void> {
   if (!f.messageInserted) {
     await insertMessage(f.conversationId, "human", f.content);
@@ -573,8 +442,8 @@ async function resolveWaSession(
   return getOpenSession(null, item.org_id);
 }
 
-// Envío según canal: WhatsApp usa la sesión resuelta; los canales de Meta
-// van por HTTPS (Graph API) con los tokens de la organización del envío.
+// Envío según canal: WhatsApp usa la sesión resuelta; WhatsApp Cloud API
+// va por HTTPS (Graph API) con los tokens de la organización del envío.
 async function deliverOutboxItem(
   item: OutboxItem,
   getMembers: () => Promise<Map<number, TeamMember>>
@@ -591,8 +460,8 @@ async function deliverOutboxItem(
 }
 
 // ¿Se puede intentar la entrega ahora? (evita reclamar filas que no van a
-// poder enviarse: sin sesiones de WhatsApp de SU organización o canal de
-// Meta deshabilitado en SU organización).
+// poder enviarse: sin sesiones de WhatsApp de SU organización o canal
+// WhatsApp API deshabilitado en SU organización).
 function isDeliverable(
   item: OutboxItem,
   settingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null
@@ -682,7 +551,7 @@ async function flushOutbox(
       // "real" (p.ej. jid inválido): ni las caídas de conexión de la cuenta
       // emisora ni la ausencia de sesiones queman intentos — con varias
       // cuentas, anySessionOpen() puede ser true mientras la emisora se cayó
-      // a mitad del envío. Para canales de Meta todo fallo cuenta.
+      // a mitad del envío. Para WhatsApp API todo fallo cuenta.
       try {
         const msg = err instanceof Error ? err.message : String(err);
         const connectionIssue = /connection closed|connection was lost|timed out|no disponible/i.test(msg);
@@ -771,11 +640,6 @@ async function main(): Promise<void> {
   } catch (err) {
     console.warn("[bot] No se pudo resetear el outbox en vuelo:", err);
   }
-  try {
-    await resetInFlightEmails();
-  } catch (err) {
-    console.warn("[bot] No se pudo resetear la cola de correos en vuelo:", err);
-  }
 
   // Estado limpio al arrancar (un run anterior pudo dejar 'connected'
   // colgado). OJO: restart_requested NO se toca — es una ORDEN pendiente del
@@ -823,8 +687,8 @@ async function main(): Promise<void> {
     void getOrCreateSession(account.id, account.org_id).start();
   }
 
-  // Tick único cada 2s: ciclo de vida de sesiones + señales + outbox +
-  // correos. El flag `ticking` evita que un tick lento se solape.
+  // Tick único cada 2s: ciclo de vida de sesiones + señales + outbox.
+  // El flag `ticking` evita que un tick lento se solape.
   let ticking = false;
   setInterval(async () => {
     if (ticking) return;
@@ -860,14 +724,11 @@ async function main(): Promise<void> {
         /* siguiente tick */
       }
 
-      // Alarmas vencidas → encolan avisos (outbox notify / email_queue).
-      await flushAlarms(settingsByOrg);
+      // Alarmas vencidas → encolan avisos (outbox notify).
+      await flushAlarms();
 
-      // El outbox corre SIEMPRE: los canales de Meta no dependen de Baileys.
+      // El outbox corre SIEMPRE: WhatsApp Cloud API no depende de Baileys.
       await flushOutbox(settingsByOrg);
-
-      // Cola de correos (Mailing), con límites por organización.
-      if (settingsByOrg) await flushEmailQueue(settingsByOrg);
     } catch (err) {
       console.error("[bot] Error en tick de outbox/señales:", err);
     } finally {

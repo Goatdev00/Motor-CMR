@@ -14,8 +14,6 @@ import { requireMember } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 function parseId(raw: string): number | null {
   const id = Number(raw);
   return Number.isInteger(id) && id > 0 ? id : null;
@@ -55,30 +53,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       patch.kind = body.kind as AlarmKind;
     }
     // El canal siempre viaja junto a su destino (el modal manda todo).
+    // Las alarmas salen solo por WhatsApp.
     if (body.via !== undefined) {
-      const via = body.via as "whatsapp" | "email";
-      if (via !== "whatsapp" && via !== "email") {
-        return NextResponse.json({ error: "Canal inválido" }, { status: 400 });
+      if (body.via !== "whatsapp") {
+        return NextResponse.json({ error: "Canal inválido (solo whatsapp)" }, { status: 400 });
       }
-      patch.via = via;
-      if (via === "whatsapp") {
-        const digits = typeof body.to_phone === "string" ? body.to_phone.replace(/[\s\-+().]/g, "") : "";
-        if (!/^\d{7,15}$/.test(digits)) {
-          return NextResponse.json(
-            { error: "Teléfono inválido (solo dígitos, con indicativo de país)" },
-            { status: 400 }
-          );
-        }
-        patch.to_phone = digits;
-        patch.to_email = null;
-      } else {
-        const email = typeof body.to_email === "string" ? body.to_email.trim() : "";
-        if (!EMAIL_REGEX.test(email) || email.length > 200) {
-          return NextResponse.json({ error: "Correo inválido" }, { status: 400 });
-        }
-        patch.to_email = email;
-        patch.to_phone = null;
+      patch.via = "whatsapp";
+      const digits = typeof body.to_phone === "string" ? body.to_phone.replace(/[\s\-+().]/g, "") : "";
+      if (!/^\d{7,15}$/.test(digits)) {
+        return NextResponse.json(
+          { error: "Teléfono inválido (solo dígitos, con indicativo de país)" },
+          { status: 400 }
+        );
       }
+      patch.to_phone = digits;
     }
     if (body.next_fire_at !== undefined) {
       const v = Number(body.next_fire_at);

@@ -1,6 +1,6 @@
-// Motor de respuestas compartido por TODOS los canales (Baileys, Messenger,
-// Instagram, WhatsApp API): persistencia, análisis de IA, derivación a
-// humano y respuesta del LLM. Cada canal solo aporta cómo se envía el texto.
+// Motor de respuestas compartido por TODOS los canales (WhatsApp por Baileys
+// y WhatsApp API): persistencia, análisis de IA, derivación a humano y
+// respuesta del LLM. Cada canal solo aporta cómo se envía el texto.
 import {
   addLeadEvent,
   getConversationById,
