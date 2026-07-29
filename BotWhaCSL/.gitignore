@@ -1,0 +1,23 @@
+# dependencias
+node_modules/
+
+# build de Next.js
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# sesión de WhatsApp (credenciales Baileys) — NUNCA committear
+auth/
+
+# variables de entorno con secretos (.env.production/.env.development
+# también los carga Next.js — cubrirlos todos)
+.env*
+!.env.example
+
+# sistema
+.DS_Store
+Thumbs.db
+
+# ajustes locales de Claude Code (hook de auto-push, personal)
+.claude/settings.local.json
