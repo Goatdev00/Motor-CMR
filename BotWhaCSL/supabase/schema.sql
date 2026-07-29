@@ -456,11 +456,19 @@ do $$ begin
   end if;
 end $$;
 
-create unique index if not exists idx_conversations_channel_ext
-  on conversations (channel, external_id);
+-- Índice transitorio previo a multi-organización: solo se crea si aún no
+-- existe su sustituto por-org (más abajo se elimina y lo reemplaza
+-- idx_conversations_org_channel_ext). Sin este guard, cada re-ejecución
+-- lo reconstruía y podía chocar con contactos repetidos entre orgs.
+do $$ begin
+  if to_regclass('public.idx_conversations_org_channel_ext') is null then
+    create unique index if not exists idx_conversations_channel_ext
+      on conversations (channel, external_id);
+  end if;
+end $$;
 
--- outbox: el canal decide cómo se envía; phone guarda el DESTINATARIO del
--- canal (teléfono o PSID/IGSID).
+-- outbox: el canal decide cómo se envía; phone guarda el DESTINATARIO
+-- (teléfono, tanto en WhatsApp Baileys como en WhatsApp Cloud API).
 alter table outbox add column if not exists channel text not null default 'whatsapp';
 
 -- Configuración de canales editable desde el dashboard (tokens de Meta,

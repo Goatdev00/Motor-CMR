@@ -121,15 +121,15 @@ export interface InboundMessage {
   // espacio y se responde con SUS tokens/configuración.
   orgId: number;
   channel: Channel;
-  // Identificador del remitente en su canal (teléfono, PSID, IGSID).
+  // Identificador del remitente en su canal (teléfono / wa_id).
   externalId: string;
   text: string;
   name?: string | null;
   phone?: string | null;
-  // Id único del mensaje en el canal, para dedup (wamid, mid, key.id).
+  // Id único del mensaje en el canal, para dedup (wamid, key.id).
   dedupeKey?: string | null;
   // Cuenta de WhatsApp que recibió el mensaje (solo canal 'whatsapp' con
-  // varias cuentas; los canales de Meta no la usan).
+  // varias cuentas; WhatsApp API no la usa).
   waAccountId?: number | null;
   // Envío de texto por el canal de origen (closure con el socket/token).
   send: (text: string) => Promise<void>;

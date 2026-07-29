@@ -23,16 +23,17 @@ el navegador). La data vive en **Supabase** (Postgres).
        │        lee/escribe                     │ lee/escribe
        └──────────────► SUPABASE ◄──────────────┘
                  (conversations, messages,
-                  connection_state, outbox)
+                  wa_accounts, outbox)
 ```
 
 Son **dos procesos separados** que no comparten memoria: se comunican a
 través de dos tablas "buzón" en Supabase:
 
-- `connection_state` — el bot publica ahí su estado (`qr`, `connected`, ...)
-  y el string del QR; el dashboard lo pollea cada 2 s. El botón "Desconectar"
-  deja una señal (`restart_requested`) que el bot recoge para cerrar sesión
-  y regenerar el QR.
+- `wa_accounts` — una fila por cuenta de WhatsApp: el bot publica ahí su
+  estado (`qr`, `connected`, ...) y el string del QR; el dashboard lo pollea
+  cada 2 s desde la pestaña **Equipo**. El botón "Desvincular" deja una señal
+  (`restart_requested`) que el bot recoge para cerrar sesión y regenerar el
+  QR.
 - `outbox` — los mensajes que escribes en modo Humano se encolan ahí; el bot
   los lee cada 2 s y los envía por Baileys.
 
@@ -76,6 +77,12 @@ Crea una key en <https://platform.openai.com/api-keys> y ponla en
 `OPENAI_API_KEY`. Modelo por defecto: `gpt-4o-mini` (~US$0.15 por millón de
 tokens; centavos al mes para uso normal). La cuenta debe tener créditos
 (el error 429/insufficient_quota significa que se agotaron).
+
+> Esta variable es el proveedor **por defecto**. Una vez montado el
+> dashboard también puedes configurar el proveedor de IA (OpenAI, Anthropic
+> o Gemini), su api key y el modelo desde **Canales → tarjeta
+> "Inteligencia artificial (IA)"** — si esa tarjeta está activa, manda ella
+> y no hace falta tocar el `.env.local`.
 
 ### Paso 3 — Configurar variables de entorno
 
@@ -150,7 +157,7 @@ Escríbele al número conectado **desde otro WhatsApp**. Deberías ver:
 ## CRM integrado
 
 El dashboard incluye un CRM orientado a **cierre de leads** (pestaña **CRM**
-del header; cada conversación de WhatsApp es un lead):
+de la barra lateral; cada conversación de WhatsApp es un lead):
 
 - **Pipeline kanban** con 6 etapas (Nuevo → Contactado → Calificado →
   Propuesta → Ganado / Perdido), arrastrar y soltar, y KPIs arriba: valor del
@@ -176,9 +183,10 @@ del header; cada conversación de WhatsApp es un lead):
   responde la frase de derivación del system prompt (constante
   `HANDOFF_PHRASE` en `src/lib/system-prompt.ts`). Queda registrado en la
   actividad del lead ("Derivado a humano").
-- El botón **"Entrar al dashboard sin conectar"** de la pantalla de QR
-  permite usar el CRM y el historial sin vincular WhatsApp; los envíos quedan
-  en cola y salen cuando el bot conecte.
+- **El dashboard funciona sin WhatsApp vinculado**: tras iniciar sesión
+  puedes usar el CRM y el historial aunque ninguna cuenta esté conectada;
+  los envíos quedan en cola y salen cuando una cuenta conecte (los QR viven
+  en la pestaña **Equipo**, por cuenta).
 
 > ⚠️ Al actualizar a esta versión: **re-ejecuta `supabase/schema.sql`
 > completo** en el SQL Editor (es idempotente). Sin eso, el bot se niega a
@@ -205,12 +213,13 @@ badge de canal.
    agrégale el producto **WhatsApp**.
 2. Registra tu número en WhatsApp Business Platform, copia el
    `Phone Number ID` y genera un `Access Token` permanente; pégalos en el
-   dashboard → **Canales** → tarjeta **WhatsApp API** → **Guardar** →
-   **Probar conexión**.
+   dashboard → **Canales** → tarjeta **WhatsApp Business (API oficial de
+   Meta)** → **Guardar** → **Probar conexión**.
 3. **Webhook**: Meta necesita una URL pública HTTPS. En local, abre un túnel:
    `cloudflared tunnel --url http://localhost:3000` (o ngrok) y usa
-   `https://TU-TUNEL/api/webhooks/meta`. En la tarjeta Webhook del dashboard
-   genera el **Verify Token** y guárdalo; registra URL + token en la app de
+   `https://TU-TUNEL/api/webhooks/meta`. En la tarjeta **Webhook de Meta
+   (WhatsApp API)** del dashboard genera el **Verify Token** y guárdalo;
+   registra URL + token en la app de
    Meta (Webhooks) y suscribe el campo `messages` en el objeto **WhatsApp
    Business Account**.
 4. En modo desarrollo de la app de Meta solo pueden escribir los números de
@@ -328,16 +337,21 @@ Calendar: Configuración → Importar y exportar → Importar).
 > tuyo y está en modo prueba: pulsa "Configuración avanzada" → continuar.
 > Es tu propia app accediendo a tu propio Drive.
 
-## Personalizar el system prompt
+## Personalizar los prompts del bot
 
-Edita [`src/lib/system-prompt.ts`](src/lib/system-prompt.ts) con las
-instrucciones de TU negocio (tono, qué vende, horarios, qué debe derivar a un
-humano, etc.) y reinicia el proceso del bot (`Ctrl+C` y `npm run start:bot`).
+Desde el dashboard: pestaña **Equipo → Equipo de IA → Prompts del bot**.
+Ahí editas el **prompt principal** con las instrucciones de TU negocio
+(tono, qué vende, horarios, qué debe derivar a un humano, etc.), con un
+generador de prompts con IA incluido. Los cambios aplican sin reiniciar
+nada. La frase exacta de derivación a humano vive en
+[`src/lib/system-prompt.ts`](src/lib/system-prompt.ts) (`HANDOFF_PHRASE`).
 
 ## Cambiar de modelo
 
-Cambia `OPENAI_MODEL` en `.env.local` (p.ej. `gpt-4o-mini`, `gpt-4.1-mini`)
-y reinicia el proceso del bot.
+Desde el dashboard: **Canales → tarjeta "Inteligencia artificial (IA)"**
+(proveedor, api key y modelo). Si esa tarjeta está apagada, el bot usa el
+fallback del `.env.local`: cambia `OPENAI_MODEL` (p.ej. `gpt-4o-mini`,
+`gpt-4.1-mini`) y reinicia el proceso del bot.
 
 ---
 
@@ -386,8 +400,8 @@ Capas extra opcionales: Cloudflare Access o basic auth en el proxy.
 | `code=440` en loop | WhatsApp ve el dispositivo como desconocido o hay sesiones viejas | Ya se usa `Browsers.macOS('Desktop')` y backoff de 15 s. En el teléfono: Dispositivos vinculados → borra dispositivos de pruebas anteriores. Si persiste en VPS, cambia de IP o espera 24 h |
 | `code=515` justo tras escanear | **Es normal**: señal de pairing exitoso | El bot reconecta solo en ~2 s y queda conectado |
 | Error 429 / insufficient_quota del LLM | La cuenta de OpenAI se quedó sin créditos | Recarga en https://platform.openai.com/settings/organization/billing |
-| El QR no aparece en el navegador | El proceso bot no corre, o `.env.local` incompleto | Revisa la terminal del bot; la pantalla de QR muestra el error tras 10 s |
-| `connection_state está vacía` | No se ejecutó el schema | Corre `supabase/schema.sql` en el SQL Editor |
+| El QR no aparece | El proceso bot no corre, o `.env.local` incompleto | Revisa la terminal del bot y el estado de la cuenta en la pestaña **Equipo** (botón "Generar QR" de la tarjeta de la cuenta) |
+| El bot avisa que falta la migración del CRM al arrancar | No se ejecutó el schema | Corre `supabase/schema.sql` completo en el SQL Editor |
 | `Node.js detected but native WebSocket not found` | supabase-js exige WebSocket nativo (Node 22+) | Ya mitigado: se le pasa la implementación de `ws` vía `realtime.transport` en `db.ts`. Si reaparece, actualiza a Node 22 (`nvm install 22`) |
 | Procesos zombie en Windows (puerto ocupado, bot duplicado) | `Ctrl+C` no siempre mata a los hijos de `tsx`/`next` | `tasklist \| findstr node` y luego `taskkill /F /PID <pid>` |
 | El bot responde dos veces | Dos procesos bot corriendo a la vez | Mata los duplicados (ver fila anterior). Nunca corras dos `start:bot` contra la misma DB |

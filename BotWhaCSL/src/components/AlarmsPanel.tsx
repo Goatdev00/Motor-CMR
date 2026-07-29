@@ -201,7 +201,7 @@ export default function AlarmsPanel() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-neutral-100">{a.title}</p>
                 <p className="truncate text-xs text-neutral-500">
-                  {`WhatsApp +${a.to_phone}`}
+                  {a.to_phone ? `WhatsApp +${a.to_phone}` : "Sin destino"}
                   {" · "}
                   {a.active ? `Próxima: ${fmtDateTime(a.next_fire_at)}` : "Apagada"}
                   {" · "}

@@ -64,17 +64,10 @@ export interface Conversation {
   org_id: number;
 }
 
-// Organización = espacio aislado de un cliente de la agencia (canales,
-// chats, CRM, equipo, plantillas, agentes, colas). La organización 1 es la
-// agencia dueña de la plataforma.
+// Organización = espacio aislado en la base de datos (canales, chats, CRM,
+// equipo, plantillas, agentes). En esta instalación existe una sola: la 1,
+// la de la empresa dueña del dashboard.
 export const AGENCY_ORG_ID = 1;
-
-export interface Organization {
-  id: number;
-  name: string;
-  active: boolean;
-  created_at: number;
-}
 
 export interface LeadNote {
   id: number;
@@ -290,29 +283,6 @@ export async function listConversations(orgId: number): Promise<ConversationWith
   const { data, error } = await sb.rpc("list_conversations", { p_org_id: orgId });
   if (error) fail("list_conversations", error.message);
   return (data ?? []) as ConversationWithPreview[];
-}
-
-// ── Organizaciones (multi-cliente) ──────────────────────────
-
-export async function listOrganizations(): Promise<Organization[]> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("organizations")
-    .select("*")
-    .order("id", { ascending: true });
-  if (error) fail("list organizations", error.message);
-  return (data ?? []) as Organization[];
-}
-
-export async function createOrganization(name: string): Promise<Organization> {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("organizations")
-    .insert({ name })
-    .select()
-    .single();
-  if (error) fail("create organization", error.message);
-  return data as Organization;
 }
 
 export async function setMode(conversationId: number, mode: ConversationMode): Promise<void> {
@@ -1152,21 +1122,6 @@ export async function claimAlarmFire(
     .select("id");
   if (error) fail("claim alarm", error.message);
   return (data ?? []).length > 0;
-}
-
-// Difiere una alarma vencida que NO puede dispararse aún: sin esto ocupaba
-// el lote de vencidas para siempre y bloqueaba las alarmas de otras
-// organizaciones. Condicional al next_fire_at conocido: si el operador la
-// reprogramó en paralelo, su cambio manda.
-export async function deferAlarm(alarm: Alarm, seconds: number): Promise<void> {
-  const sb = getSupabase();
-  const { error } = await sb
-    .from("alarms")
-    .update({ next_fire_at: epoch() + seconds })
-    .eq("id", alarm.id)
-    .eq("next_fire_at", alarm.next_fire_at)
-    .eq("active", true);
-  if (error) fail("defer alarm", error.message);
 }
 
 export async function setAlarmError(id: number, message: string): Promise<void> {

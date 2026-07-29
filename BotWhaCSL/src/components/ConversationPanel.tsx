@@ -215,7 +215,11 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
           <p className="text-xs text-neutral-500">{conversationSubtitle(conversation)}</p>
         </div>
         <div className="flex items-center gap-3">
-          <ModeToggle mode={conversation.mode} onChange={changeMode} />
+          {/* Los leads del canal 'api' no tienen canal de salida: el toggle
+              IA/Humano no aplica (nadie puede responderles desde aquí). */}
+          {conversation.channel !== "api" && (
+            <ModeToggle mode={conversation.mode} onChange={changeMode} />
+          )}
           <button
             onClick={() => setShowLead(!showLead)}
             className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
@@ -247,7 +251,15 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
 
       {/* Composer */}
       <div className="border-t border-neutral-800 bg-neutral-900 p-3">
-        {isHuman ? (
+        {conversation.channel === "api" ? (
+          // Lead inyectado por la API pública, sin teléfono: no hay por dónde
+          // responderle. El chat queda de solo lectura.
+          <input
+            disabled
+            placeholder="Lead de la API sin canal de respuesta — gestiónalo desde la ficha CRM"
+            className="w-full cursor-not-allowed rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-500 placeholder:text-neutral-500"
+          />
+        ) : isHuman ? (
           <>
             <div className="flex gap-2">
               <QuickReplies

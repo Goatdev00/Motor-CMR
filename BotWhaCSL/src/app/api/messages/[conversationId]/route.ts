@@ -76,7 +76,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     // un envío imposible.
     if (conversation.channel === "api") {
       return NextResponse.json(
-        { error: "Este lead llegó por la API sin teléfono: no tiene canal de respuesta. Contáctalo por correo o agrega su WhatsApp." },
+        { error: "Este lead llegó por la API sin teléfono: no tiene canal de respuesta. Pide a la app de origen reenviarlo con su número de WhatsApp." },
         { status: 400 }
       );
     }
