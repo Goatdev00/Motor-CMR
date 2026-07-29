@@ -62,6 +62,10 @@ no se vuelve a pedir mientras la sesión siga viva en el teléfono.
 3. Ve a **SQL Editor** (menú izquierdo) → **New query** → pega TODO el
    contenido de [`supabase/schema.sql`](supabase/schema.sql) → **Run**.
    Debe terminar con "Success. No rows returned".
+   - *Opcional, solo para demos*: ejecuta también
+     [`supabase/demo-seed.sql`](supabase/demo-seed.sql) para cargar leads,
+     chats, calendario y una alarma de ejemplo (no hace nada si la base ya
+     tiene datos).
 4. Ve a **Project Settings → API** (o **API Keys**) y copia:
    - **Project URL** → será tu `SUPABASE_URL`
    - **service_role** key (la secreta, NO la `anon`) → será tu
