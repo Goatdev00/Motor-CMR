@@ -41,6 +41,13 @@ La **sesión de WhatsApp** (credenciales de Baileys) se guarda en la carpeta
 local `./auth/` de la máquina donde corre el bot. Tras el primer escaneo de QR
 no se vuelve a pedir mientras la sesión siga viva en el teléfono.
 
+> ⚠️ **Nunca dentro de OneDrive/Dropbox/Drive**: el bot reescribe los
+> archivos de sesión constantemente y la sincronización los corrompe — los
+> mensajes "se envían" pero no llegan, y al final la sesión muere. Si el
+> proyecto vive en una carpeta sincronizada, crea `auth/` como *junction* a
+> una carpeta local, p.ej.:
+> `New-Item -ItemType Junction -Path .\auth -Target "$env:LOCALAPPDATA\BotWhaCSL-auth"`
+
 ---
 
 ## Montaje paso a paso
@@ -409,3 +416,4 @@ Capas extra opcionales: Cloudflare Access o basic auth en el proxy.
 | `Node.js detected but native WebSocket not found` | supabase-js exige WebSocket nativo (Node 22+) | Ya mitigado: se le pasa la implementación de `ws` vía `realtime.transport` en `db.ts`. Si reaparece, actualiza a Node 22 (`nvm install 22`) |
 | Procesos zombie en Windows (puerto ocupado, bot duplicado) | `Ctrl+C` no siempre mata a los hijos de `tsx`/`next` | `tasklist \| findstr node` y luego `taskkill /F /PID <pid>` |
 | El bot responde dos veces | Dos procesos bot corriendo a la vez | Mata los duplicados (ver fila anterior). Nunca corras dos `start:bot` contra la misma DB |
+| Las respuestas se ven en el dashboard pero NO llegan al WhatsApp del cliente | (a) Dos bots con la misma sesión (en la terminal del bot verás `code=440` en bucle), o (b) la carpeta `auth/` está en OneDrive y la sesión se corrompió | (a) Deja UNA sola instancia (`tasklist \| findstr node` + `taskkill`). (b) Saca `auth/` de OneDrive (junction, ver Arquitectura), en el teléfono cierra los dispositivos vinculados muertos y re-escanea el QR desde Equipo |
