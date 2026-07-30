@@ -16,7 +16,7 @@ el navegador). La data vive en **Supabase** (Postgres).
         │                                        │
         ▼                                        ▼
 ┌────────────────┐                     ┌──────────────────┐
-│  Proceso BOT   │                     │  Next.js (:3000) │
+│  Proceso BOT   │                     │  Next.js (:3013) │
 │  (Baileys)     │                     │  dashboard + API │
 │  start-bot.ts  │                     └────────┬─────────┘
 └──────┬─────────┘                              │
@@ -137,7 +137,7 @@ corrido `npm run build` antes, porque usa `next start`.)
 
 ### Paso 6 — Iniciar sesión y escanear el QR
 
-1. Abre <http://localhost:3000> e **inicia sesión** con la cuenta inicial:
+1. Abre <http://localhost:3013> e **inicia sesión** con la cuenta inicial:
    usuario `admin`, contraseña `admin123` (**cámbiala tras el primer
    login** desde el menú de cuenta, abajo a la izquierda). Luego entra a la
    pestaña **Equipo**: verás la cuenta "Principal" con su QR (el bot debe
@@ -227,7 +227,7 @@ badge de canal.
    dashboard → **Canales** → tarjeta **WhatsApp Business (API oficial de
    Meta)** → **Guardar** → **Probar conexión**.
 3. **Webhook**: Meta necesita una URL pública HTTPS. En local, abre un túnel:
-   `cloudflared tunnel --url http://localhost:3000` (o ngrok) y usa
+   `cloudflared tunnel --url http://localhost:3013` (o ngrok) y usa
    `https://TU-TUNEL/api/webhooks/meta`. En la tarjeta **Webhook de Meta
    (WhatsApp API)** del dashboard genera el **Verify Token** y guárdalo;
    registra URL + token en la app de
@@ -333,7 +333,7 @@ Todo se configura desde el botón **"Google Drive"** del calendario:
    agrega tu correo como **usuario de prueba**) → Credenciales → **ID de
    cliente de OAuth** → tipo **Aplicación web**.
 2. En "URI de redirección autorizados" registra la URI que muestra el modal
-   (botón Copiar), p.ej. `http://localhost:3000/api/google/callback`.
+   (botón Copiar), p.ej. `http://localhost:3013/api/google/callback`.
 3. Habilita la **API de Google Drive** en el proyecto (APIs y servicios →
    Biblioteca → Google Drive API → Habilitar).
 4. Pega el Client ID y el Client Secret en el modal → "Guardar credenciales"

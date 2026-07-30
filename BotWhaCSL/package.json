@@ -8,9 +8,9 @@
     "node": ">=20.9.0"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3013",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3013",
     "typecheck": "tsc --noEmit",
     "start:bot": "tsx scripts/start-bot.ts",
     "start:all": "concurrently --kill-others --names BOT,WEB --prefix-colors yellow,cyan \"npm run start:bot\" \"npm run start\"",
