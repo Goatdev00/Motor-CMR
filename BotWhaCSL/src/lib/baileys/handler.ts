@@ -21,14 +21,17 @@ function extractText(msg: WAMessage): string | null {
 
 // WhatsApp moderno entrega muchos chats 1:1 con JID "@lid" (número oculto)
 // en vez del clásico "<numero>@s.whatsapp.net". En esos casos el número real
-// viene en msg.key.senderPn. Sin este manejo, los mensajes de esos contactos
-// se descartaban en silencio y el bot parecía "muerto".
+// viene en msg.key.remoteJidAlt (Baileys v7; en 6.7.x era key.senderPn). Sin
+// este manejo, los mensajes de esos contactos se descartaban en silencio y
+// el bot parecía "muerto".
 function resolvePhone(msg: WAMessage, jid: string): string | null {
   if (jid.endsWith("@s.whatsapp.net")) {
     return jid.split("@")[0].split(":")[0] || null;
   }
-  const pn = msg.key.senderPn;
-  if (pn) return pn.split("@")[0].split(":")[0] || null;
+  const alt = msg.key.remoteJidAlt;
+  if (alt?.endsWith("@s.whatsapp.net")) {
+    return alt.split("@")[0].split(":")[0] || null;
+  }
   return null;
 }
 

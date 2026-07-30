@@ -2,6 +2,7 @@
   "name": "botwha-csl",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "BotWha CSL — CRM de WhatsApp con IA: chats, CRM, plantillas, calendario, alarmas y equipos (humano + agentes IA). Baileys + Next.js + Supabase.",
   "engines": {
     "node": ">=20.9.0"
@@ -18,7 +19,7 @@
   "dependencies": {
     "@hapi/boom": "^10.0.1",
     "@supabase/supabase-js": "^2.110.0",
-    "@whiskeysockets/baileys": "^6.7.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "concurrently": "^9.1.0",
     "next": "^16.2.10",
     "openai": "^6.0.0",

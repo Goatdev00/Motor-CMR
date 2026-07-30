@@ -1,6 +1,6 @@
 // Diagnóstico de entrega de WhatsApp (uso puntual, no forma parte del bot).
-// Se conecta con la MISMA sesión del bot (auth/acc-2), envía un mensaje de
-// prueba y escucha los acuses del protocolo:
+// Se conecta con la MISMA sesión del bot (auth/acc-<id>, argumento 2; por
+// defecto acc-4), envía un mensaje de prueba y escucha los acuses:
 //   status 2 = el SERVIDOR de WhatsApp lo aceptó
 //   status 3 = ENTREGADO al teléfono del destinatario
 //   status 4 = LEÍDO
@@ -8,23 +8,21 @@
 // (sesión/dispositivo marcado). ⚠️ El bot debe estar DETENIDO al correr esto.
 import makeWASocket, {
   Browsers,
-  fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 
 const TO_PHONE = process.argv[2] ?? "573205095533";
 const TO_JID = `${TO_PHONE}@s.whatsapp.net`;
+const AUTH_DIR = process.argv[3] ?? "auth/acc-4";
 
 async function main() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth/acc-2");
-  const { version } = await fetchLatestBaileysVersion();
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const sock = makeWASocket({
-    version,
     auth: state,
     browser: Browsers.macOS("Desktop"),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    logger: pino({ level: "warn" }) as any,
+    logger: pino({ level: process.env.DIAG_LOG ?? "warn" }) as any,
   });
   sock.ev.on("creds.update", saveCreds);
 
