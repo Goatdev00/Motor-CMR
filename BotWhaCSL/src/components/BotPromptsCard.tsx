@@ -27,7 +27,7 @@ export default function BotPromptsCard({ isAdmin }: Props) {
   const [generalDefault, setGeneralDefault] = useState("");
   const [principal, setPrincipal] = useState("");
   const [canEditGeneral, setCanEditGeneral] = useState(false);
-  const [maxLength, setMaxLength] = useState(6000);
+  const [maxLength, setMaxLength] = useState(20000);
   const [loaded, setLoaded] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -84,7 +84,7 @@ export default function BotPromptsCard({ isAdmin }: Props) {
       setGeneralDefault(data.generalDefault ?? "");
       setPrincipal(data.principal ?? "");
       setCanEditGeneral(data.canEditGeneral ?? false);
-      setMaxLength(data.maxLength ?? 6000);
+      setMaxLength(data.maxLength ?? 20000);
       setDirty(false);
       setLoaded(true);
     } catch {

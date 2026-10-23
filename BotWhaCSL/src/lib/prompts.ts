@@ -14,7 +14,7 @@
 import { AGENCY_ORG_ID, getAppSetting, setAppSetting } from "./db";
 import { HANDOFF_PHRASE } from "./system-prompt";
 
-export const MAX_PROMPT_LENGTH = 6000;
+export const MAX_PROMPT_LENGTH = 20000;
 
 // General por defecto (si la agencia no ha escrito uno propio).
 export const DEFAULT_GENERAL_PROMPT = `
