@@ -135,6 +135,11 @@ npm run dev
 (O un solo comando para producción: `npm run start:all` — requiere haber
 corrido `npm run build` antes, porque usa `next start`.)
 
+En Windows, para desarrollo local, `npm run dev:local` levanta bot +
+dashboard en <http://localhost:3434> (o el puerto de `PORT`) y antes mata
+el bot anterior de esta copia y lo que ocupe ese puerto, así nunca quedan
+dos bots con la misma sesión.
+
 ### Paso 6 — Iniciar sesión y escanear el QR
 
 1. Abre <http://localhost:3013> e **inicia sesión** con la cuenta inicial:
