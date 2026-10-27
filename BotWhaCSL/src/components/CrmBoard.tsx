@@ -6,6 +6,7 @@ import {
   CHANNEL_BADGE_CLASS,
   CHANNEL_LABELS,
   conversationDisplayName,
+  conversationSubtitle,
   isChannel,
 } from "@/lib/channels";
 import {
@@ -49,6 +50,15 @@ function isWaiting(l: ConversationWithPreview): boolean {
     return l.last_message_role === "user";
   }
   return l.last_user_message_at !== null && l.last_user_message_at === l.last_message_at;
+}
+
+// Pista corta del número ("··· 1234") para distinguir leads de WhatsApp con
+// el mismo nombre de perfil (misma regla que en ConversationList). Sin
+// nombre no hace falta: el nombre visible ya es el número completo.
+function phoneHint(l: ConversationWithPreview): string | null {
+  if (!l.name || (l.channel !== "whatsapp" && l.channel !== "whatsapp_api")) return null;
+  const digits = (l.phone || l.external_id || "").replace(/\D/g, "");
+  return digits.length >= 4 ? `··· ${digits.slice(-4)}` : null;
 }
 
 function scoreBadgeClass(score: number): string {
@@ -117,17 +127,29 @@ export default function CrmBoard({ onOpenLead }: Props) {
       setAnalyzingAll(false);
     }
   };
-  // Guard de secuencia: descarta respuestas del poll que resuelven después
-  // de una mutación (sin esto, mover una tarjeta "rebotaba" hasta 5s cuando
-  // un GET viejo en vuelo pisaba el estado optimista).
+  // Guards del poll (mismo esquema que el panel de conversación): una
+  // respuesta se aplica solo si es más nueva que la última APLICADA y
+  // posterior a la última mutación (mover una tarjeta invalida los GETs en
+  // vuelo: sin esto "rebotaba" hasta 5s). Los polls no se solapan y un GET
+  // colgado se aborta a los 15s: antes ganaba solo el último EMITIDO y, con
+  // GETs de más de 5s, cada poll descartaba al anterior y el tablero se
+  // quedaba congelado.
   const seqRef = useRef(0);
+  const appliedSeqRef = useRef(0);
+  const invalidSeqRef = useRef(0);
 
-  const refetch = async () => {
+  const refetch = async (signal?: AbortSignal) => {
     const seq = ++seqRef.current;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 15000);
+    const onAbort = () => ctrl.abort();
+    signal?.addEventListener("abort", onAbort);
+    const fresh = () => !ctrl.signal.aborted && seq > appliedSeqRef.current && seq > invalidSeqRef.current;
     try {
-      const res = await fetch("/api/crm", { cache: "no-store" });
+      const res = await fetch("/api/crm", { cache: "no-store", signal: ctrl.signal });
       const data = (await res.json()) as { leads?: ConversationWithPreview[]; error?: string };
-      if (seq !== seqRef.current) return; // respuesta obsoleta
+      if (!fresh()) return; // respuesta obsoleta
+      appliedSeqRef.current = seq;
       if (!res.ok) {
         setError(data.error ?? `HTTP ${res.status}`);
         return;
@@ -135,17 +157,23 @@ export default function CrmBoard({ onOpenLead }: Props) {
       setError(null);
       setLeads(data.leads ?? []);
     } catch {
-      /* reintenta en el próximo poll */
+      /* abortado o error de red: reintenta en el próximo poll */
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
     }
   };
 
   useEffect(() => {
     let active = true;
+    const unmounted = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // El siguiente poll se agenda 5s DESPUÉS de que termine el anterior.
     const poll = async () => {
-      if (active) await refetch();
+      await refetch(unmounted.signal);
+      if (active) timer = setTimeout(poll, 5000);
     };
     poll();
-    const timer = setInterval(poll, 5000);
     // Config de etapas: una vez al montar (si falla, quedan los defaults).
     fetch("/api/settings/stages", { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
@@ -155,14 +183,15 @@ export default function CrmBoard({ onOpenLead }: Props) {
       .catch(() => undefined);
     return () => {
       active = false;
-      clearInterval(timer);
+      clearTimeout(timer);
+      unmounted.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const moveStage = async (id: number, stage: LeadStage) => {
     // Optimista (setLeads funcional) + invalidación de GETs en vuelo.
-    seqRef.current++;
+    invalidSeqRef.current = seqRef.current;
     setLeads((prev) =>
       prev ? prev.map((l) => (l.id === id && l.stage !== stage ? { ...l, stage } : l)) : prev
     );
@@ -173,6 +202,8 @@ export default function CrmBoard({ onOpenLead }: Props) {
         body: JSON.stringify({ stage }),
       });
     } finally {
+      // Los GETs emitidos durante el PATCH pudieron leer la etapa anterior.
+      invalidSeqRef.current = seqRef.current;
       refetch();
     }
   };
@@ -306,6 +337,7 @@ export default function CrmBoard({ onOpenLead }: Props) {
               <div className="min-h-24 flex-1 space-y-2 overflow-y-auto p-2">
                 {items.map((l) => {
                   const waitingLead = isWaiting(l);
+                  const hint = phoneHint(l);
                   return (
                     <div
                       key={l.id}
@@ -319,8 +351,18 @@ export default function CrmBoard({ onOpenLead }: Props) {
                       className="cursor-pointer rounded-lg border border-neutral-800 bg-neutral-900 p-2.5 transition-colors hover:border-neutral-600"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="truncate text-sm font-medium text-neutral-100">
-                          {conversationDisplayName(l)}
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-sm font-medium text-neutral-100">
+                            {conversationDisplayName(l)}
+                          </span>
+                          {hint && (
+                            <span
+                              title={conversationSubtitle(l)}
+                              className="shrink-0 text-[10px] text-neutral-500"
+                            >
+                              {hint}
+                            </span>
+                          )}
                         </span>
                         {l.lead_score !== null && (
                           <span

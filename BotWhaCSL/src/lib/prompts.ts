@@ -87,9 +87,12 @@ export async function getSystemPromptCached(orgId: number): Promise<string> {
     cache.set(orgId, { at: now, prompt });
     return prompt;
   } catch (err) {
-    // Blip de Supabase: lo último conocido o el default (el bot no se calla
-    // por no poder leer el prompt).
+    // Blip de Supabase: lo último conocido. Sin nada en caché (recién
+    // arrancado) se propaga el error en vez de responder con el prompt
+    // genérico, sin las reglas ni los datos del negocio: el motor de
+    // respuestas reintenta en unos segundos.
+    if (!hit) throw err;
     console.error("[bot] No se pudo leer el prompt del bot (se usa el caché):", err);
-    return hit?.prompt ?? composeSystemPrompt({ general: "", principal: "" });
+    return hit.prompt;
   }
 }

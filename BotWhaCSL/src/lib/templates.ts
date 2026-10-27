@@ -76,8 +76,11 @@ export async function getKeywordTriggersCached(orgId: number): Promise<KeywordTr
     cache.set(orgId, { at: now, triggers });
     return triggers;
   } catch (err) {
-    // Blip de Supabase: se sigue con lo último conocido (o sin triggers).
+    // Blip de Supabase: se sigue con lo último conocido. Sin caché (recién
+    // arrancado) se propaga: responder sin las palabras clave del negocio
+    // sería peor que reintentar en unos segundos.
+    if (!hit) throw err;
     console.error("[bot] No se pudieron leer las palabras clave (se usa el caché):", err);
-    return hit?.triggers ?? [];
+    return hit.triggers;
   }
 }

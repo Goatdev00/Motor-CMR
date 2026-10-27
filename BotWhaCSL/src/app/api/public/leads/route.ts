@@ -3,12 +3,13 @@ import { randomUUID } from "crypto";
 import {
   addLeadEvent,
   addLeadNote,
+  findApiLeadByEmail,
+  getAllChannelSettings,
   getOrCreateConversation,
   insertMessage,
   listConversations,
   routeLeadForStage,
   updateLeadFields,
-  upgradeApiLeadToWhatsapp,
 } from "@/lib/db";
 import { maybeAnalyzeLead } from "@/lib/lead-analysis";
 import { verifyApiKey } from "@/lib/api-keys";
@@ -98,24 +99,42 @@ export async function POST(req: NextRequest) {
     // cliente de la agencia inyecta leads en SU espacio.
     const orgId = key.org_id;
 
-    // Con teléfono el lead vive en WhatsApp (mismo hilo si luego escribe);
-    // sin teléfono, canal 'api' con el correo como identificador (dedupe) o
-    // un id sintético si tampoco hay correo.
-    const channel = phone ? ("whatsapp" as const) : ("api" as const);
+    // Con teléfono el lead vive en WhatsApp — en el canal por el que la
+    // organización realmente conversa (Cloud API si es su único WhatsApp),
+    // para que sea el MISMO hilo cuando el cliente escriba. Sin teléfono,
+    // canal 'api' con el correo como identificador (dedupe) o un id
+    // sintético si tampoco hay correo.
+    let channel: "whatsapp" | "whatsapp_api" | "api" = "api";
+    if (phone) {
+      const settings = await getAllChannelSettings(orgId);
+      const cloudApiOnly = !!settings["whatsapp_api"]?.enabled && settings["whatsapp"]?.enabled === false;
+      channel = cloudApiOnly ? "whatsapp_api" : "whatsapp";
+    }
     const externalId = phone ?? email ?? `api-${randomUUID()}`;
 
-    // Dedupe cruzada: si este contacto ya existía solo con correo (canal
-    // 'api') y ahora llega su teléfono, se asciende la MISMA fila a WhatsApp
-    // en vez de crear un duplicado.
-    let convo =
-      phone && email ? await upgradeApiLeadToWhatsapp(orgId, email, phone) : null;
-    if (!convo) {
-      convo = await getOrCreateConversation(orgId, channel, externalId, {
-        name: name || undefined,
-        phone,
-      });
-    }
+    const convo = await getOrCreateConversation(orgId, channel, externalId, {
+      name: name || undefined,
+      phone,
+    });
     const isNew = convo.last_message_at === null && convo.created_at >= Math.floor(Date.now() / 1000) - 10;
+
+    // Mismo correo que un lead que llegó antes solo por correo: NO se
+    // fusionan solos (el correo de un formulario no está verificado y la
+    // fusión le daba a esta persona el historial de otra). Queda una nota en
+    // ambos para que el operador decida.
+    if (isNew && phone && email) {
+      const sameEmail = await findApiLeadByEmail(orgId, email).catch(() => null);
+      if (sameEmail && sameEmail.id !== convo.id) {
+        await addLeadNote(
+          convo.id,
+          `Posible duplicado: el lead #${sameEmail.id}${sameEmail.name ? ` (${sameEmail.name})` : ""} llegó antes por la API con el mismo correo. Si es la misma persona, unifícalos a mano.`
+        ).catch(() => undefined);
+        await addLeadNote(
+          sameEmail.id,
+          `Posible duplicado: el lead #${convo.id}${name ? ` (${name})` : ""} llegó por la API con el mismo correo y el teléfono ${phone}.`
+        ).catch(() => undefined);
+      }
+    }
 
     // Los datos de contacto solo RELLENAN campos vacíos (nunca pisan lo que
     // el operador o la IA ya escribieron) — mismo contrato que el análisis.

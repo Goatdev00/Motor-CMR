@@ -104,6 +104,13 @@ export interface Message {
   role: MessageRole;
   content: string;
   created_at: number;
+  // Id del mensaje en su canal (key.id de Baileys, wamid de Meta, o el id
+  // que el bot generó al enviar). Null en filas previas a la migración.
+  channel_msg_id?: string | null;
+  // Cuándo lo escribió el cliente según el canal (solo entrantes).
+  sent_at?: number | null;
+  // Respuestas del bot: último mensaje del cliente que esa respuesta vio.
+  covers_msg_id?: number | null;
 }
 
 // Cuenta de WhatsApp (multi-sesión Baileys): el bot mantiene una sesión por
@@ -156,7 +163,21 @@ export interface OutboxItem {
   // 'manual': mensaje humano ya insertado en messages al hacer POST.
   // 'followup': programado; el bot inserta el mensaje al momento de enviarlo.
   // 'notify': aviso interno a un vendedor; NUNCA se inserta en el hilo.
-  kind: "manual" | "followup" | "notify";
+  // 'bot': respuesta de la IA que no se pudo entregar en el momento; el bot
+  // la inserta en el hilo (rol 'assistant') recién al entregarla.
+  // 'bot_fixed': ídem para respuestas deterministas (palabra clave, acuse
+  // de derivación), que siguen valiendo aunque la conversación esté en
+  // modo HUMANO.
+  kind: "manual" | "followup" | "notify" | "bot" | "bot_fixed";
+  // Respuestas del bot en cola: último mensaje del cliente que cubren.
+  covers_msg_id?: number | null;
+  // Respuestas del bot en cola: id con el que se intentó enviar en vivo. Se
+  // reutiliza al entregarla (WhatsApp descarta el duplicado si el intento en
+  // vivo sí había salido) y hace idempotente el encolado.
+  channel_msg_id?: string | null;
+  // Respuestas del bot en cola: número de la cuenta al que escribió el
+  // cliente. Si la cuenta se re-vinculó a otro número, no sale.
+  account_phone?: string | null;
   scheduled_at: number | null;
   // Cuenta de WhatsApp explícita para este envío (null = resolver al enviar).
   wa_account_id: number | null;
@@ -169,6 +190,7 @@ export interface OutboxItem {
 // `next build` corra sin variables de entorno) y falla con mensaje claro
 // en el primer uso real si faltan.
 let client: SupabaseClient | null = null;
+const DB_REQUEST_TIMEOUT_MS = 20_000;
 
 export function getSupabase(): SupabaseClient {
   if (client) return client;
@@ -182,6 +204,17 @@ export function getSupabase(): SupabaseClient {
   }
   client = createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
+    // Tope por petición: una conexión colgada (red inestable) no debe
+    // bloquear una cola indefinidamente; withDbRetry reintenta.
+    global: {
+      fetch: (input, init) =>
+        fetch(input, {
+          ...init,
+          signal: init?.signal
+            ? AbortSignal.any([init.signal, AbortSignal.timeout(DB_REQUEST_TIMEOUT_MS)])
+            : AbortSignal.timeout(DB_REQUEST_TIMEOUT_MS),
+        }),
+    },
     // Node < 22 no trae WebSocket nativo y supabase-js lanza
     // "Node.js detected but native WebSocket not found" al crear el cliente
     // (aunque no usemos Realtime). Se le pasa la implementación de `ws`
@@ -195,8 +228,107 @@ function epoch(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function fail(context: string, message: string): never {
-  throw new Error(`Supabase (${context}): ${message}`);
+// El error conserva el código (SQLSTATE de Postgres o PGRSTxxx de PostgREST)
+// y los detalles: sin ellos, una caída real de Supabase ("Database
+// connection error", Postgres reiniciando) se confundía con un error de
+// datos y no se reintentaba.
+type DbErrorLike = { message?: string; code?: string; details?: string | null };
+
+function fail(context: string, err: string | DbErrorLike): never {
+  if (typeof err === "string") throw new Error(`Supabase (${context}): ${err}`);
+  const code = err.code ? ` [${err.code}]` : "";
+  const details = err.details ? ` — ${String(err.details).slice(0, 200)}` : "";
+  throw new Error(`Supabase (${context}): ${err.message ?? ""}${code}${details}`);
+}
+
+// ── Errores transitorios y reintentos ───────────────────────
+// supabase-js solo reintenta los GET ante errores de red: los inserts, RPCs
+// y updates fallan a la primera ("TypeError: fetch failed"). withDbRetry los
+// reintenta con backoff SOLO si el error es de red o de disponibilidad del
+// servidor — nunca ante errores de datos (reintentar un unique_violation no
+// lo arregla).
+const TRANSIENT_DB_ERROR = new RegExp(
+  [
+    // Red / cliente HTTP
+    "fetch failed|network|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|UND_ERR|\\bterminated\\b|timed? ?out|timing out|aborted|AbortError|TimeoutError",
+    // Gateway / Kong / PostgREST reiniciando
+    "Bad Gateway|Service Unavailable|Gateway Time-?out|Too Many Requests|rate limit|upstream|ring-balancer|Retrying",
+    // Postgres no disponible (reinicio, arranque, sin conexiones)
+    "terminating connection|starting up|shutting down|too many connections|connection (?:refused|reset|closed)",
+    // Códigos: PostgREST sin base (PGRST000-003), SQLSTATE de conexión (08),
+    // recursos (53), operador (57P0x, 57014) y conflictos de serialización.
+    "\\[(?:PGRST00[0-3]|08\\w{3}|53\\w{3}|57P0[1-3]|57014|40001|40P01)\\]",
+  ].join("|"),
+  "i"
+);
+// Respuesta 5xx sin cuerpo: supabase-js deja el mensaje vacío.
+const EMPTY_DB_ERROR = /^Supabase \([^)]*\):\s*(?:\[|$)/;
+
+export function isTransientDbError(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? `${err.message} ${String((err as { cause?: unknown }).cause ?? "")}`
+      : String(err);
+  return TRANSIENT_DB_ERROR.test(msg) || (err instanceof Error && EMPTY_DB_ERROR.test(err.message));
+}
+
+// Error de DATOS (no de red): reintentarlo nunca lo arregla. Clases SQLSTATE
+// 22 (dato inválido) y 23 (restricción), salvo el unique_violation.
+export function isDataError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/\[23505\]/.test(msg)) return false;
+  return /\[(?:22\w{3}|23\w{3})\]|violates|invalid input syntax|value too long|null value in column/i.test(msg);
+}
+
+export async function withDbRetry<T>(
+  fn: () => Promise<T>,
+  opts: { attempts?: number; baseDelayMs?: number; maxDelayMs?: number; label?: string } = {}
+): Promise<T> {
+  const attempts = opts.attempts ?? 4;
+  const base = opts.baseDelayMs ?? 500;
+  const max = opts.maxDelayMs ?? 8000;
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i >= attempts || !isTransientDbError(err)) throw err;
+      const delay = Math.min(max, base * 2 ** (i - 1));
+      if (opts.label) {
+        console.warn(
+          `[db] ${opts.label}: error transitorio (intento ${i}/${attempts}), reintento en ${delay}ms —`,
+          err instanceof Error ? err.message : err
+        );
+      }
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
+// ¿La función RPC no existe en la base? (migración de schema.sql sin correr)
+function isMissingFunction(error: { code?: string; message?: string }, fn: string): boolean {
+  if (error.code === "PGRST202" || error.code === "42883") return true;
+  return !!error.message?.includes(fn) && /could not find|does not exist|schema cache/i.test(error.message);
+}
+
+// Las RPC de la sección "BLINDAJE" de schema.sql: si la base aún no las
+// tiene se usa el camino compatible y se vuelve a probar cada 5 min —
+// ejecutar la migración las activa sin reiniciar nada.
+const MIGRATION_RETRY_MS = 5 * 60_000;
+const missingRpcSince = new Map<string, number>();
+
+function shouldTryRpc(fn: string): boolean {
+  const since = missingRpcSince.get(fn);
+  return since === undefined || Date.now() - since > MIGRATION_RETRY_MS;
+}
+
+function markRpcMissing(fn: string): void {
+  if (!missingRpcSince.has(fn)) {
+    console.warn(
+      `[db] ⚠️ La base no tiene ${fn} (sección "BLINDAJE" de supabase/schema.sql): ` +
+        "se usa el modo compatible. Ejecuta esa sección en el SQL Editor de Supabase."
+    );
+  }
+  missingRpcSince.set(fn, Date.now());
 }
 
 // ── Conversaciones ──────────────────────────────────────────
@@ -205,7 +337,8 @@ export async function getOrCreateConversation(
   orgId: number,
   channel: Channel,
   externalId: string,
-  opts?: { name?: string | null; phone?: string | null }
+  // mode: solo al CREARLA (p.ej. HUMANO si la inició un asesor).
+  opts?: { name?: string | null; phone?: string | null; mode?: ConversationMode }
 ): Promise<Conversation> {
   const sb = getSupabase();
 
@@ -216,7 +349,7 @@ export async function getOrCreateConversation(
     .eq("channel", channel)
     .eq("external_id", externalId)
     .maybeSingle();
-  if (selError) fail("select conversation", selError.message);
+  if (selError) fail("select conversation", selError);
 
   if (existing) {
     // Actualiza el nombre solo si llegó uno y aún no teníamos.
@@ -240,6 +373,7 @@ export async function getOrCreateConversation(
       external_id: externalId,
       phone: opts?.phone ?? null,
       name: opts?.name ?? null,
+      ...(opts?.mode ? { mode: opts.mode } : {}),
     })
     .select()
     .single();
@@ -258,7 +392,7 @@ export async function getOrCreateConversation(
       if (retryError || !retry) fail("retry select conversation", retryError?.message ?? "no encontrada");
       return retry as Conversation;
     }
-    fail("insert conversation", insError.message);
+    fail("insert conversation", insError);
   }
   return created as Conversation;
 }
@@ -274,14 +408,33 @@ export async function getConversationById(
   let query = sb.from("conversations").select("*").eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { data, error } = await query.maybeSingle();
-  if (error) fail("select conversation by id", error.message);
+  if (error) fail("select conversation by id", error);
+  return (data as Conversation | null) ?? null;
+}
+
+// Busca SIN crear (p.ej. mensajes que el equipo escribe desde el teléfono
+// del negocio: se registran solo en leads que ya existen).
+export async function findConversation(
+  orgId: number,
+  channel: Channel,
+  externalId: string
+): Promise<Conversation | null> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("conversations")
+    .select("*")
+    .eq("org_id", orgId)
+    .eq("channel", channel)
+    .eq("external_id", externalId)
+    .maybeSingle();
+  if (error) fail("find conversation", error);
   return (data as Conversation | null) ?? null;
 }
 
 export async function listConversations(orgId: number): Promise<ConversationWithPreview[]> {
   const sb = getSupabase();
   const { data, error } = await sb.rpc("list_conversations", { p_org_id: orgId });
-  if (error) fail("list_conversations", error.message);
+  if (error) fail("list_conversations", error);
   return (data ?? []) as ConversationWithPreview[];
 }
 
@@ -291,13 +444,13 @@ export async function setMode(conversationId: number, mode: ConversationMode): P
     .from("conversations")
     .update({ mode })
     .eq("id", conversationId);
-  if (error) fail("set mode", error.message);
+  if (error) fail("set mode", error);
 }
 
 export async function deleteConversation(id: number): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb.rpc("delete_conversation", { p_id: id });
-  if (error) fail("delete_conversation", error.message);
+  if (error) fail("delete_conversation", error);
 }
 
 // ── Mensajes ────────────────────────────────────────────────
@@ -314,8 +467,59 @@ export async function insertMessage(
     p_role: role,
     p_content: content,
   });
-  if (error) fail("insert_message", error.message);
+  if (error) fail("insert_message", error);
   return data as Message;
+}
+
+export interface InsertMessageResult {
+  message: Message;
+  // false = ya estaba guardado (re-entrega del canal o reintento tras un
+  // corte en el que el insert sí se aplicó pero la respuesta se perdió).
+  inserted: boolean;
+}
+
+// Insert IDEMPOTENTE por (conversación, id del mensaje en su canal). Guarda
+// además la hora del canal (sentAt: cuándo escribió el cliente) y, en las
+// respuestas del bot, hasta qué mensaje del cliente cubren (coversMsgId).
+// Sin la migración "BLINDAJE" cae a insert_message (sin esas garantías).
+export async function insertMessageIdempotent(
+  conversationId: number,
+  role: MessageRole,
+  content: string,
+  opts: {
+    channelMsgId?: string | null;
+    createdAt?: number | null;
+    sentAt?: number | null;
+    coversMsgId?: number | null;
+  } = {}
+): Promise<InsertMessageResult> {
+  const sb = getSupabase();
+  if (shouldTryRpc("insert_message_v2")) {
+    const { data, error } = await sb.rpc("insert_message_v2", {
+      p_conversation_id: conversationId,
+      p_role: role,
+      p_content: content,
+      p_channel_msg_id: opts.channelMsgId ?? null,
+      p_created_at: opts.createdAt ?? null,
+      p_sent_at: opts.sentAt ?? null,
+      p_covers_msg_id: opts.coversMsgId ?? null,
+    });
+    if (!error) {
+      missingRpcSince.delete("insert_message_v2");
+      const result = data as { message: Message; inserted: boolean };
+      return { message: result.message, inserted: result.inserted };
+    }
+    if (!isMissingFunction(error, "insert_message_v2")) fail("insert_message_v2", error);
+    markRpcMissing("insert_message_v2");
+  }
+  // Modo compatible: sin channel_msg_id, un mensaje automático del teléfono
+  // del negocio ('auto:<id>') quedaría como un 'human' más y el motor lo
+  // tomaría por la respuesta de un asesor (el mensaje del cliente que lo
+  // disparó nunca se respondería). Sin la migración no se guarda.
+  if (role === "human" && opts.channelMsgId?.startsWith("auto:")) {
+    return { message: null as unknown as Message, inserted: false };
+  }
+  return { message: await insertMessage(conversationId, role, content), inserted: true };
 }
 
 // Últimos N mensajes en orden cronológico ASCENDENTE.
@@ -330,7 +534,7 @@ export async function getMessages(conversationId: number, limit = 50): Promise<M
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(limit);
-  if (error) fail("get messages", error.message);
+  if (error) fail("get messages", error);
   return ((data ?? []) as Message[]).reverse();
 }
 
@@ -347,7 +551,7 @@ export async function listWaAccounts(orgId?: number): Promise<WaAccount[]> {
   let query = sb.from("wa_accounts").select("*");
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { data, error } = await query.order("id", { ascending: true });
-  if (error) fail("list wa_accounts", error.message);
+  if (error) fail("list wa_accounts", error);
   return (data ?? []) as WaAccount[];
 }
 
@@ -358,7 +562,7 @@ export async function createWaAccount(orgId: number, label: string): Promise<WaA
     .insert({ label, org_id: orgId })
     .select()
     .single();
-  if (error) fail("create wa_account", error.message);
+  if (error) fail("create wa_account", error);
   return data as WaAccount;
 }
 
@@ -389,7 +593,7 @@ export async function updateWaAccount(
   let query = sb.from("wa_accounts").update(update).eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { error } = await query;
-  if (error) fail("update wa_account", error.message);
+  if (error) fail("update wa_account", error);
 }
 
 export async function deleteWaAccount(id: number, orgId?: number): Promise<void> {
@@ -397,7 +601,7 @@ export async function deleteWaAccount(id: number, orgId?: number): Promise<void>
   let query = sb.from("wa_accounts").delete().eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { error } = await query;
-  if (error) fail("delete wa_account", error.message);
+  if (error) fail("delete wa_account", error);
 }
 
 // ── Miembros del equipo ─────────────────────────────────────
@@ -409,7 +613,7 @@ export async function listTeamMembers(orgId?: number): Promise<TeamMember[]> {
   let query = sb.from("team_members").select(TEAM_MEMBER_COLUMNS);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { data, error } = await query.order("id", { ascending: true });
-  if (error) fail("list team_members", error.message);
+  if (error) fail("list team_members", error);
   return (data ?? []) as unknown as TeamMember[];
 }
 
@@ -420,7 +624,7 @@ export async function getTeamMemberById(id: number): Promise<TeamMember | null> 
     .select(TEAM_MEMBER_COLUMNS)
     .eq("id", id)
     .maybeSingle();
-  if (error) fail("get team_member", error.message);
+  if (error) fail("get team_member", error);
   return (data as unknown as TeamMember | null) ?? null;
 }
 
@@ -447,7 +651,7 @@ export async function createTeamMember(
     })
     .select(TEAM_MEMBER_COLUMNS)
     .single();
-  if (error) fail("create team_member", error.message);
+  if (error) fail("create team_member", error);
   return data as unknown as TeamMember;
 }
 
@@ -474,7 +678,7 @@ export async function updateTeamMember(
   let query = sb.from("team_members").update(update).eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { data, error } = await query.select(TEAM_MEMBER_COLUMNS).maybeSingle();
-  if (error) fail("update team_member", error.message);
+  if (error) fail("update team_member", error);
   return (data as unknown as TeamMember | null) ?? null;
 }
 
@@ -490,7 +694,7 @@ export async function loginMember(
     p_username: username,
     p_password: password,
   });
-  if (error) fail("login_member", error.message);
+  if (error) fail("login_member", error);
   const rows = (data ?? []) as Array<TeamMember & { password_hash?: string }>;
   if (rows.length === 0) return null;
   const { password_hash: _hash, ...member } = rows[0];
@@ -510,7 +714,7 @@ export async function listAdminAccessIds(orgId: number): Promise<number[]> {
     .eq("role", "ADMIN")
     .not("username", "is", null)
     .not("password_hash", "is", null);
-  if (error) fail("list admin access", error.message);
+  if (error) fail("list admin access", error);
   return ((data ?? []) as { id: number }[]).map((r) => r.id);
 }
 
@@ -520,7 +724,7 @@ export async function setMemberPassword(id: number, password: string): Promise<v
     p_member_id: id,
     p_password: password,
   });
-  if (error) fail("set_member_password", error.message);
+  if (error) fail("set_member_password", error);
 }
 
 export async function deleteTeamMember(id: number, orgId?: number): Promise<void> {
@@ -528,7 +732,7 @@ export async function deleteTeamMember(id: number, orgId?: number): Promise<void
   let query = sb.from("team_members").delete().eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { error } = await query;
-  if (error) fail("delete team_member", error.message);
+  if (error) fail("delete team_member", error);
 }
 
 // Asignación de un lead (evento + aviso por WhatsApp, atómico en SQL).
@@ -543,7 +747,7 @@ export async function assignLead(
     p_member_id: memberId,
     p_reason: reason,
   });
-  if (error) fail("assign_lead", error.message);
+  if (error) fail("assign_lead", error);
 }
 
 // La cuenta por la que habla el lead (última que recibió su mensaje).
@@ -556,7 +760,7 @@ export async function setConversationWaAccount(
     .from("conversations")
     .update({ wa_account_id: accountId })
     .eq("id", conversationId);
-  if (error) fail("set conversation wa_account", error.message);
+  if (error) fail("set conversation wa_account", error);
 }
 
 // ── Outbox (mensajes humanos del dashboard) ─────────────────
@@ -573,7 +777,7 @@ export async function insertHumanMessage(
     p_conversation_id: conversationId,
     p_content: content,
   });
-  if (error) fail("insert_human_message", error.message);
+  if (error) fail("insert_human_message", error);
   return data as Message;
 }
 
@@ -595,18 +799,25 @@ export async function getPendingOutbox(
   if (excludeChannels.length > 0) {
     query = query.not("channel", "in", `(${excludeChannels.join(",")})`);
   }
+  // Primero lo nunca diferido (por antigüedad) y después lo diferido o
+  // programado, por su hora: las filas de una cuenta caída, que se difieren
+  // una y otra vez, no vuelven a tapar el lote y nunca dejan sin turno a las
+  // de otras cuentas, canales u organizaciones. Este orden NO es el de cada
+  // destinatario (una fila nueva sin diferir va antes que una vieja
+  // diferida): ese lo cuida el bot antes de enviar (olderPendingOutboxTime).
   const { data, error } = await query
+    .order("scheduled_at", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: true })
     .order("id", { ascending: true })
     .limit(limit);
-  if (error) fail("get pending outbox", error.message);
+  if (error) fail("get pending outbox", error);
   return (data ?? []) as OutboxItem[];
 }
 
 export async function markOutboxSent(id: number): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb.from("outbox").update({ sent: 1 }).eq("id", id);
-  if (error) fail("mark outbox sent", error.message);
+  if (error) fail("mark outbox sent", error);
 }
 
 // Reclamo condicional justo antes de enviar: pasa la fila a sent=3
@@ -621,7 +832,7 @@ export async function claimOutboxItem(id: number): Promise<boolean> {
     .eq("id", id)
     .eq("sent", 0)
     .select("id");
-  if (error) fail("claim outbox", error.message);
+  if (error) fail("claim outbox", error);
   return (data ?? []).length > 0;
 }
 
@@ -630,22 +841,452 @@ export async function claimOutboxItem(id: number): Promise<boolean> {
 // vía scheduled_at) y al llegar a maxAttempts descarta (sent=2); sin el
 // backoff, 5 ticks de 2s quemaban los intentos en ~10s ante un hipo
 // transitorio de la API de Meta. Las caídas de conexión de Baileys no
-// queman intentos ni esperan. Devuelve true si el ítem quedó descartado.
+// queman intentos ni esperan. Devuelve si el ítem quedó descartado y, si se
+// reprogramó con backoff, hasta cuándo (epoch s).
 export async function releaseOutboxFailure(
   item: OutboxItem,
   countAttempt: boolean,
-  maxAttempts = 5
-): Promise<boolean> {
+  maxAttempts = 5,
+  // Sin contar intento (cuenta caída): igual se pospone, para que la fila no
+  // vuelva al frente del lote en cada tick y tapone a todas las demás.
+  deferSeconds = 0,
+  // claimed=false: la fila sigue pendiente (no se llegó a reclamar).
+  opts: { claimed?: boolean } = {}
+): Promise<{ discarded: boolean; retryAt: number | null }> {
   const sb = getSupabase();
   const attempts = countAttempt ? item.attempts + 1 : item.attempts;
   const discarded = attempts >= maxAttempts;
   const patch: Record<string, unknown> = { attempts, sent: discarded ? 2 : 0 };
+  let retryAt: number | null = null;
   if (!discarded && countAttempt) {
-    patch.scheduled_at = epoch() + 30 * attempts;
+    retryAt = epoch() + 30 * attempts;
+    patch.scheduled_at = retryAt;
+  } else if (!discarded && deferSeconds > 0) {
+    retryAt = epoch() + deferSeconds;
+    patch.scheduled_at = retryAt;
   }
-  const { error } = await sb.from("outbox").update(patch).eq("id", item.id);
-  if (error) fail("release outbox", error.message);
-  return discarded;
+  // Condicional (sigue 'enviando' o pendiente): si el operador canceló o
+  // reprogramó la fila mientras tanto, liberar no debe revivirla.
+  const { data, error } = await sb
+    .from("outbox")
+    .update(patch)
+    .eq("id", item.id)
+    .eq("sent", opts.claimed === false ? 0 : 3)
+    .select("id");
+  if (error) fail("release outbox", error);
+  // Nada que liberar (la fila cambió por fuera): sin consecuencias.
+  if ((data ?? []).length === 0) return { discarded: false, retryAt: null };
+  return { discarded, retryAt };
+}
+
+// Descarta (sent=2) una fila aún pendiente. Condicional: si ya se reclamó
+// o se envió, no se toca. Devuelve true si la descartó.
+export async function discardOutboxItem(id: number): Promise<boolean> {
+  const sb = getSupabase();
+  const { data, error } = await sb.from("outbox").update({ sent: 2 }).eq("id", id).eq("sent", 0).select("id");
+  if (error) fail("discard outbox", error);
+  return (data ?? []).length > 0;
+}
+
+// Tras un fallo con backoff, los envíos POSTERIORES al mismo destinatario
+// esperan lo mismo: si no, salían antes que el atrasado y el cliente los
+// leía desordenados. Solo mensajes del operador y respuestas en cola: los
+// seguimientos conservan su hora (follow_up_sent la usa para limpiar el
+// recordatorio del lead).
+export async function deferLaterOutboxForRecipient(item: OutboxItem, until: number): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb
+    .from("outbox")
+    .update({ scheduled_at: until })
+    .eq("org_id", item.org_id)
+    .eq("channel", item.channel)
+    .eq("phone", item.phone)
+    .gt("id", item.id)
+    .eq("sent", 0)
+    .in("kind", ["manual", "bot", "bot_fixed"])
+    .or(`scheduled_at.is.null,scheduled_at.lt.${until}`);
+  if (error) fail("defer later outbox", error);
+}
+
+// Un envío ANTERIOR al mismo destinatario que sigue pendiente o saliendo
+// (mensajes del operador y respuestas en cola, como el diferido conjunto):
+// undefined = no hay; si no, la hora más tardía a la que está programado
+// (null = sin hora). El bot no envía uno posterior antes que él: el orden se
+// verifica contra la base, así sobrevive a un reinicio y a un diferido que no
+// se pudo escribir.
+export async function olderPendingOutboxTime(item: OutboxItem): Promise<number | null | undefined> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("outbox")
+    .select("scheduled_at")
+    .eq("org_id", item.org_id)
+    .eq("channel", item.channel)
+    .eq("phone", item.phone)
+    .lt("id", item.id)
+    .in("sent", [0, 3])
+    .in("kind", ["manual", "bot", "bot_fixed"])
+    .order("scheduled_at", { ascending: false, nullsFirst: false })
+    .limit(1);
+  if (error) fail("older pending outbox", error);
+  const row = (data ?? [])[0] as { scheduled_at: number | null } | undefined;
+  return row === undefined ? undefined : row.scheduled_at;
+}
+
+// Pospone una fila pendiente hasta `until` (solo si la atrasa: nunca la
+// adelanta).
+export async function deferOutboxUntil(id: number, until: number): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb
+    .from("outbox")
+    .update({ scheduled_at: until })
+    .eq("id", id)
+    .eq("sent", 0)
+    .or(`scheduled_at.is.null,scheduled_at.lt.${until}`);
+  if (error) fail("defer outbox until", error);
+}
+
+// Respuestas automáticas en cola creadas antes de `before` (epoch s) y aún
+// pendientes: las que vencieron sin que el bot llegara a intentarlas.
+export async function listStaleBotReplies(before: number, limit = 50): Promise<OutboxItem[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("outbox")
+    .select("*")
+    .eq("sent", 0)
+    .in("kind", ["bot", "bot_fixed"])
+    .lt("created_at", before)
+    .order("id", { ascending: true })
+    .limit(limit);
+  if (error) fail("stale bot replies", error);
+  return (data ?? []) as OutboxItem[];
+}
+
+// Estado actual de una fila del outbox (null si ya no existe).
+export async function getOutboxSentState(id: number): Promise<number | null> {
+  const sb = getSupabase();
+  const { data, error } = await sb.from("outbox").select("sent").eq("id", id).maybeSingle();
+  if (error) fail("outbox state", error);
+  return (data as { sent: number } | null)?.sent ?? null;
+}
+
+// Devuelve a pendiente una fila que quedó 'enviando' sin dueño (reclamo cuya
+// respuesta se perdió en un corte): condicional, solo si sigue en 3.
+export async function unclaimOutboxItem(id: number): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.from("outbox").update({ sent: 0 }).eq("id", id).eq("sent", 3);
+  if (error) fail("unclaim outbox", error);
+}
+
+// Respuesta automática que no se pudo entregar en el momento (socket caído
+// más allá de la espera, Graph API caída): queda en el outbox con la cuenta
+// por la que escribió el cliente, y el tick la entrega cuando el canal
+// vuelva — recién ahí se inserta en el hilo como 'assistant'.
+// Requiere la migración "BLINDAJE": sin covers_msg_id una respuesta en cola
+// no dice qué mensaje del cliente responde, y ni el outbox al entregarla ni
+// el motor tras un reinicio pueden saber qué quedó sin responder. Sin ella no
+// se encola (QUEUE_UNSUPPORTED): el motor reintenta en vivo y, si el canal
+// sigue caído, la conversación pasa a un asesor.
+const BLINDAJE_OUTBOX_COLUMNS = ["covers_msg_id", "channel_msg_id", "account_phone"];
+
+export class QueueUnsupportedError extends Error {
+  readonly code = "QUEUE_UNSUPPORTED";
+}
+
+export async function enqueueBotReply(
+  conversationId: number,
+  content: string,
+  waAccountId: number | null,
+  opts: {
+    kind?: "bot" | "bot_fixed";
+    coversMsgId?: number | null;
+    // Id con el que se intentó en vivo: idempotencia del encolado y del envío.
+    channelMsgId?: string | null;
+    // Número de la cuenta al que escribió el cliente.
+    accountPhone?: string | null;
+  } = {}
+): Promise<void> {
+  const sb = getSupabase();
+  const conv = await getConversationById(conversationId);
+  if (!conv) fail("enqueue bot reply", `conversation ${conversationId} no existe`);
+  const recipient = conv.external_id ?? conv.phone;
+  if (!recipient) fail("enqueue bot reply", `conversation ${conversationId} sin destinatario`);
+  const row: Record<string, unknown> = {
+    conversation_id: conversationId,
+    phone: recipient,
+    content,
+    channel: conv.channel,
+    org_id: conv.org_id,
+    kind: opts.kind ?? "bot",
+    wa_account_id: waAccountId ?? conv.wa_account_id,
+  };
+  // Siempre presentes (aunque sean null): sin la migración el insert falla
+  // por la columna y no queda ninguna fila a medias.
+  row.covers_msg_id = opts.coversMsgId ?? null;
+  row.channel_msg_id = opts.channelMsgId ?? null;
+  row.account_phone = opts.accountPhone ?? null;
+  const { error } = await sb.from("outbox").insert(row);
+  if (!error) return;
+  // Reintento de un encolado que SÍ se había aplicado (la respuesta se
+  // perdió en un corte): ya está en la cola y no se duplica.
+  if (error.code === "23505" && row.channel_msg_id) return;
+  if (BLINDAJE_OUTBOX_COLUMNS.some((c) => isMissingColumn(error, c) && (error.message ?? "").includes(c))) {
+    throw new QueueUnsupportedError(
+      "sin la migración BLINDAJE (supabase/schema.sql) las respuestas automáticas no se pueden dejar en cola"
+    );
+  }
+  fail("enqueue bot reply", error);
+}
+
+// Filas de un rol en la conversación con la marca del canal (para distinguir
+// envíos automáticos). Sin la migración "BLINDAJE" la columna no existe: se
+// leen sin ella y toda fila 'human' cuenta como una persona (mejor de más
+// que de menos: en la duda, el bot no habla encima).
+async function roleRows(
+  conversationId: number,
+  roles: MessageRole[],
+  filter: { sinceCreatedAt?: number; beforeCreatedAt?: number; afterId?: number; beforeId?: number },
+  context: string
+): Promise<{ role: MessageRole; channel_msg_id?: string | null }[]> {
+  const sb = getSupabase();
+  const query = (columns: string) => {
+    let q = sb.from("messages").select(columns).eq("conversation_id", conversationId).in("role", roles);
+    if (filter.sinceCreatedAt !== undefined) q = q.gte("created_at", filter.sinceCreatedAt);
+    if (filter.beforeCreatedAt !== undefined) q = q.lt("created_at", filter.beforeCreatedAt);
+    if (filter.afterId !== undefined) q = q.gt("id", filter.afterId);
+    if (filter.beforeId !== undefined) q = q.lt("id", filter.beforeId);
+    return q.limit(50);
+  };
+  const { data, error } = await query("id, role, channel_msg_id");
+  if (!error) return (data ?? []) as unknown as { role: MessageRole; channel_msg_id?: string | null }[];
+  if (!isMissingColumn(error, "channel_msg_id")) fail(context, error);
+  const compat = await query("id, role");
+  if (compat.error) fail(context, compat.error);
+  return (compat.data ?? []) as unknown as { role: MessageRole }[];
+}
+
+const isPerson = (m: { role: MessageRole; channel_msg_id?: string | null }) =>
+  m.role === "human" && !isAutomatedMessageId(m.channel_msg_id);
+
+// ¿Un asesor escribió en la conversación desde `since` (epoch s)? Los
+// seguimientos programados y los mensajes automáticos del teléfono del
+// negocio no cuentan: no son una persona atendiendo.
+export async function hasHumanReplySince(conversationId: number, since: number): Promise<boolean> {
+  return (await roleRows(conversationId, ["human"], { sinceCreatedAt: since }, "human reply since")).some(isPerson);
+}
+
+// ¿Un asesor escribió DESPUÉS del mensaje `afterMsgId` (p.ej. el del cliente
+// que cubre una respuesta automática)?
+export async function hasHumanReplyAfter(conversationId: number, afterMsgId: number): Promise<boolean> {
+  return (await roleRows(conversationId, ["human"], { afterId: afterMsgId }, "human reply after")).some(isPerson);
+}
+
+// ¿El negocio (bot o una persona) escribió en los `windowS` segundos ANTES
+// del mensaje del cliente cuyo id en el canal es `customerChannelMsgId`? Sin
+// respuestas en ese lapso, ese mensaje ABRE la conversación (como cuenta
+// WhatsApp Business para mandar su bienvenida). Se ancla en la posición del
+// mensaje en el hilo, no en relojes. Si no se lo encuentra (aún no está
+// guardado, o la base no tiene la migración "BLINDAJE" y no guarda ids del
+// canal), cuenta lo anterior a la hora en que el cliente lo escribió
+// (`customerSentAt`): la respuesta del bot a ESE mensaje, si ya se guardó,
+// no lo vuelve una conversación "en curso".
+export async function hasBusinessReplyBefore(
+  conversationId: number,
+  customerChannelMsgId: string | null,
+  windowS: number,
+  customerSentAt: number | null = null
+): Promise<boolean> {
+  const sb = getSupabase();
+  let anchor: { id: number; created_at: number } | null = null;
+  if (customerChannelMsgId) {
+    const { data, error } = await sb
+      .from("messages")
+      .select("id, created_at")
+      .eq("conversation_id", conversationId)
+      .eq("channel_msg_id", customerChannelMsgId)
+      .maybeSingle();
+    if (error && !isMissingColumn(error, "channel_msg_id")) fail("customer message", error);
+    if (!error && data) anchor = data as { id: number; created_at: number };
+  }
+  const until = anchor ? undefined : (customerSentAt ?? undefined);
+  const rows = await roleRows(
+    conversationId,
+    ["assistant", "human"],
+    {
+      sinceCreatedAt: (anchor?.created_at ?? until ?? epoch()) - windowS,
+      beforeCreatedAt: until,
+      beforeId: anchor?.id,
+    },
+    "business reply before"
+  );
+  return rows.some((m) => m.role === "assistant" || isPerson(m));
+}
+
+// Textos que ya se registraron como mensaje automático de WhatsApp Business
+// en la organización (vacío sin la migración "BLINDAJE").
+export async function recentAutomatedTexts(orgId: number): Promise<string[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("messages")
+    .select("content, conversations!inner(org_id)")
+    .like("channel_msg_id", "auto:%")
+    .eq("conversations.org_id", orgId)
+    .order("id", { ascending: false })
+    .limit(50);
+  if (error) {
+    if (isMissingColumn(error, "channel_msg_id")) return [];
+    fail("automated texts", error);
+  }
+  return ((data ?? []) as unknown as { content: string }[]).map((m) => m.content);
+}
+
+// Filas 'human' que no escribió una persona en ese momento: seguimientos
+// programados (followup:<outbox>) y mensajes automáticos de WhatsApp
+// Business desde el teléfono del negocio (auto:<id>).
+export function isAutomatedMessageId(channelMsgId: string | null | undefined): boolean {
+  return !!channelMsgId && (channelMsgId.startsWith("followup:") || channelMsgId.startsWith("auto:"));
+}
+
+function isMissingColumn(error: { code?: string; message?: string }, column: string): boolean {
+  return (
+    error.code === "42703" ||
+    error.code === "PGRST204" ||
+    (!!error.message?.includes(column) && /does not exist|could not find/i.test(error.message))
+  );
+}
+
+// Respuestas del bot de una conversación que esperan entrega en el outbox
+// (pendientes o saliendo). Sin la migración no hay covers_msg_id.
+export interface QueuedBotReply {
+  id: number;
+  sent: number;
+  kind: OutboxItem["kind"];
+  created_at: number;
+  covers_msg_id?: number | null;
+}
+
+export async function listQueuedBotReplies(conversationId: number): Promise<QueuedBotReply[]> {
+  const sb = getSupabase();
+  const query = (columns: string) =>
+    sb
+      .from("outbox")
+      .select(columns)
+      .eq("conversation_id", conversationId)
+      .in("kind", ["bot", "bot_fixed"])
+      .in("sent", [0, 3])
+      .order("id", { ascending: true });
+  const { data, error } = await query("id, sent, kind, created_at, covers_msg_id");
+  if (!error) return (data ?? []) as unknown as QueuedBotReply[];
+  if (!isMissingColumn(error, "covers_msg_id")) fail("queued bot replies", error);
+  const compat = await query("id, sent, kind, created_at");
+  if (compat.error) fail("queued bot replies", compat.error);
+  return (compat.data ?? []) as unknown as QueuedBotReply[];
+}
+
+// ¿Ya hay en el hilo una respuesta del bot que cubre hasta `coversMsgId`
+// (o, sin ese dato, una respuesta guardada después de `createdAfter`)?
+export async function hasBotReplyCovering(
+  conversationId: number,
+  coversMsgId: number | null,
+  createdAfter: number
+): Promise<boolean> {
+  const sb = getSupabase();
+  if (coversMsgId !== null) {
+    const { data, error } = await sb
+      .from("messages")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .eq("role", "assistant")
+      .gte("covers_msg_id", coversMsgId)
+      .limit(1);
+    if (!error) return (data ?? []).length > 0;
+    if (!isMissingColumn(error, "covers_msg_id")) fail("bot reply covering", error);
+  }
+  const { data, error } = await sb
+    .from("messages")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("role", "assistant")
+    .gt("created_at", createdAfter)
+    .limit(1);
+  if (error) fail("bot reply covering", error);
+  return (data ?? []).length > 0;
+}
+
+export interface PendingReply {
+  conversation_id: number;
+  org_id: number;
+  channel: Channel;
+  // Último mensaje del hilo (del cliente). Null en el modo compatible.
+  last_message_id: number | null;
+  last_message_at: number | null;
+}
+
+// Conversaciones en modo IA cuyo último mensaje es del cliente, con
+// actividad desde `since` (epoch s): el barrido del bot las retoma tras un
+// reinicio o un fallo. Sin la migración "BLINDAJE" se usa un superconjunto
+// por columnas — el pase de respuesta verifica el último mensaje real.
+export async function listPendingAiReplies(
+  since: number,
+  limit = 100,
+  channel: Channel | null = null
+): Promise<PendingReply[]> {
+  const sb = getSupabase();
+  if (shouldTryRpc("pending_ai_replies")) {
+    const { data, error } = await sb.rpc("pending_ai_replies", {
+      p_since: since,
+      p_limit: limit,
+      p_channel: channel,
+    });
+    if (!error) {
+      missingRpcSince.delete("pending_ai_replies");
+      return (data ?? []) as PendingReply[];
+    }
+    if (!isMissingFunction(error, "pending_ai_replies")) fail("pending_ai_replies", error);
+    markRpcMissing("pending_ai_replies");
+  }
+  // Las más recientes primero y con margen: el filtro por columnas es un
+  // superconjunto y no debe dejar afuera a las recientes.
+  const { data, error } = await sb
+    .from("conversations")
+    .select("id, org_id, channel, last_message_at, last_user_message_at")
+    .eq("mode", "AI")
+    .in("channel", channel ? [channel] : ["whatsapp", "whatsapp_api"])
+    .gte("last_user_message_at", since)
+    .order("last_user_message_at", { ascending: false })
+    .limit(Math.max(limit * 5, 500));
+  if (error) fail("pending replies", error);
+  const rows = (data ?? []) as Array<{
+    id: number;
+    org_id: number;
+    channel: Channel;
+    last_message_at: number | null;
+    last_user_message_at: number | null;
+  }>;
+  const candidates = rows.filter(
+    (r) => r.last_user_message_at !== null && (r.last_message_at ?? 0) <= r.last_user_message_at
+  );
+  if (candidates.length === 0) return [];
+  const { data: queued, error: queuedError } = await sb
+    .from("outbox")
+    .select("conversation_id")
+    .in("kind", ["bot", "bot_fixed"])
+    .in("sent", [0, 3])
+    .in(
+      "conversation_id",
+      candidates.map((c) => c.id)
+    );
+  if (queuedError) fail("pending replies (outbox)", queuedError);
+  const busy = new Set(((queued ?? []) as { conversation_id: number }[]).map((q) => q.conversation_id));
+  return candidates
+    .filter((c) => !busy.has(c.id))
+    .slice(0, limit)
+    .map((c) => ({
+      conversation_id: c.id,
+      org_id: c.org_id,
+      channel: c.channel,
+      last_message_id: null,
+      last_message_at: c.last_user_message_at,
+    }));
 }
 
 // Al arrancar el bot: filas que quedaron 'enviando' (sent=3) porque el
@@ -661,13 +1302,73 @@ export async function deferOutboxItem(id: number, seconds: number): Promise<void
     .update({ scheduled_at: epoch() + seconds })
     .eq("id", id)
     .eq("sent", 0);
-  if (error) fail("defer outbox", error.message);
+  if (error) fail("defer outbox", error);
 }
 
-export async function resetInFlightOutbox(): Promise<void> {
+// Al arrancar el bot: filas que quedaron 'enviando' (sent=3) porque el
+// proceso anterior murió en medio de una entrega. WhatsApp (Baileys) vuelve
+// a pendiente: el reintento sale con el MISMO id y WhatsApp descarta el
+// duplicado. WhatsApp API no admite id propio y pudo haber salido: NUNCA se
+// reenvía — se da por enviada y se devuelve para avisar al operador.
+// settled: las de WhatsApp API (se dan por enviadas); reset: ids de las de
+// WhatsApp que vuelven a pendiente.
+export async function resetInFlightOutbox(): Promise<{ settled: OutboxItem[]; reset: number[] }> {
   const sb = getSupabase();
-  const { error } = await sb.from("outbox").update({ sent: 0 }).eq("sent", 3);
-  if (error) fail("reset outbox in-flight", error.message);
+  const { data: resetRows, error } = await sb
+    .from("outbox")
+    .update({ sent: 0 })
+    .eq("sent", 3)
+    .eq("channel", "whatsapp")
+    .select("id");
+  if (error) fail("reset outbox in-flight", error);
+  const { data, error: settleError } = await sb
+    .from("outbox")
+    .update({ sent: 1 })
+    .eq("sent", 3)
+    .neq("channel", "whatsapp")
+    .select("*");
+  if (settleError) fail("settle outbox in-flight", settleError);
+  return {
+    settled: (data ?? []) as OutboxItem[],
+    reset: ((resetRows ?? []) as { id: number }[]).map((r) => r.id),
+  };
+}
+
+// Mensaje del hilo con este rol y texto guardado desde `since`, o null (un
+// envío del outbox que un cierre dejó a medio marcar, un mensaje repuesto
+// desde el disco que el intento anterior ya había guardado). El texto se
+// compara acá y no en el filtro: puede ser largo para la URL de la consulta.
+export async function findMessageSince(
+  conversationId: number,
+  role: MessageRole,
+  content: string,
+  since: number
+): Promise<Message | null> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .eq("role", role)
+    .gte("created_at", since)
+    .order("id", { ascending: false })
+    .limit(20);
+  if (error) fail("message since", error);
+  return ((data ?? []) as Message[]).find((m) => m.content === content) ?? null;
+}
+
+// ¿La tabla messages guarda el id del canal? (sección "BLINDAJE"). Sin eso
+// guardar dos veces lo mismo no se deduplica. Se averigua una vez y, mientras
+// falte, de nuevo cada 5 min (como las RPC).
+let channelIdsProbe: { keeps: boolean; at: number } | null = null;
+export async function messagesKeepChannelIds(): Promise<boolean> {
+  if (channelIdsProbe && (channelIdsProbe.keeps || Date.now() - channelIdsProbe.at < MIGRATION_RETRY_MS)) {
+    return channelIdsProbe.keeps;
+  }
+  const { error } = await getSupabase().from("messages").select("channel_msg_id").limit(1);
+  if (error && !isMissingColumn(error, "channel_msg_id")) fail("messages channel ids", error);
+  channelIdsProbe = { keeps: !error, at: Date.now() };
+  return channelIdsProbe.keeps;
 }
 
 // ── CRM: leads ──────────────────────────────────────────────
@@ -704,7 +1405,7 @@ export async function updateLeadFields(id: number, patch: LeadPatch): Promise<Co
     .eq("id", id)
     .select()
     .single();
-  if (error) fail("update lead", error.message);
+  if (error) fail("update lead", error);
   return data as Conversation;
 }
 
@@ -718,7 +1419,7 @@ export async function setStage(id: number, stage: LeadStage, route = true): Prom
     p_stage: stage,
     p_route: route,
   });
-  if (error) fail("set_stage", error.message);
+  if (error) fail("set_stage", error);
 }
 
 // Aplica la regla de enrutamiento de una etapa (asignación + aviso). El
@@ -730,7 +1431,7 @@ export async function routeLeadForStage(conversationId: number, stage: LeadStage
     p_conversation_id: conversationId,
     p_stage: stage,
   });
-  if (error) fail("route_lead_for_stage", error.message);
+  if (error) fail("route_lead_for_stage", error);
 }
 
 // Resultado del análisis de IA que se persiste sobre el lead. Los datos de
@@ -762,7 +1463,7 @@ export async function persistLeadAnalysis(id: number, patch: LeadAnalysisPatch):
     p_company: patch.company ?? null,
     p_email: patch.email ?? null,
   });
-  if (error) fail("apply_lead_analysis", error.message);
+  if (error) fail("apply_lead_analysis", error);
 }
 
 // ── CRM: notas y actividad ──────────────────────────────────
@@ -776,7 +1477,7 @@ export async function getLeadNotes(conversationId: number): Promise<LeadNote[]> 
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(50);
-  if (error) fail("get lead notes", error.message);
+  if (error) fail("get lead notes", error);
   return (data ?? []) as LeadNote[];
 }
 
@@ -787,7 +1488,7 @@ export async function addLeadNote(conversationId: number, content: string): Prom
     .insert({ conversation_id: conversationId, content })
     .select()
     .single();
-  if (error) fail("add lead note", error.message);
+  if (error) fail("add lead note", error);
   return data as LeadNote;
 }
 
@@ -802,7 +1503,21 @@ export async function addLeadEvent(
   const { error } = await sb
     .from("lead_events")
     .insert({ conversation_id: conversationId, type, detail });
-  if (error) fail("add lead event", error.message);
+  if (error) fail("add lead event", error);
+}
+
+// ¿Hay un evento de ese tipo en la actividad del lead desde `since` (epoch s)?
+export async function hasLeadEventSince(conversationId: number, type: string, since: number): Promise<boolean> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("lead_events")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("type", type)
+    .gte("created_at", since)
+    .limit(1);
+  if (error) fail("lead event since", error);
+  return (data ?? []).length > 0;
 }
 
 export async function getLeadEvents(conversationId: number): Promise<LeadEvent[]> {
@@ -814,7 +1529,7 @@ export async function getLeadEvents(conversationId: number): Promise<LeadEvent[]
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(30);
-  if (error) fail("get lead events", error.message);
+  if (error) fail("get lead events", error);
   return (data ?? []) as LeadEvent[];
 }
 
@@ -831,13 +1546,13 @@ export async function scheduleFollowUp(
     p_content: content,
     p_send_at: sendAt,
   });
-  if (error) fail("schedule_follow_up", error.message);
+  if (error) fail("schedule_follow_up", error);
 }
 
 export async function cancelFollowUp(conversationId: number): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb.rpc("cancel_follow_up", { p_conversation_id: conversationId });
-  if (error) fail("cancel_follow_up", error.message);
+  if (error) fail("cancel_follow_up", error);
 }
 
 // El bot la llama tras entregar un seguimiento. El scheduled_at hace el
@@ -852,7 +1567,7 @@ export async function markFollowUpSent(
     p_conversation_id: conversationId,
     p_scheduled_at: scheduledAt,
   });
-  if (error) fail("follow_up_sent", error.message);
+  if (error) fail("follow_up_sent", error);
 }
 
 // El bot la llama cuando un seguimiento se descarta tras agotar reintentos.
@@ -865,7 +1580,7 @@ export async function markFollowUpFailed(
     p_conversation_id: conversationId,
     p_scheduled_at: scheduledAt,
   });
-  if (error) fail("follow_up_failed", error.message);
+  if (error) fail("follow_up_failed", error);
 }
 
 // Verificación de arranque del bot: si las migraciones CRM/multicanal no
@@ -905,6 +1620,14 @@ export async function assertCrmMigration(): Promise<void> {
     orgsError ??
     orgColError;
   if (firstError) {
+    // Solo un error de esquema (tabla/columna inexistente) significa que falta
+    // la migración. Un corte de red o la base reiniciando NO: se lanza tal
+    // cual (transitorio) para que el arranque espere en vez de salir con un
+    // diagnóstico falso.
+    const missingSchema =
+      ["42P01", "42703", "PGRST200", "PGRST204", "PGRST205"].includes(firstError.code ?? "") ||
+      /does not exist|schema cache|could not find/i.test(firstError.message ?? "");
+    if (!missingSchema) fail("verificación de migraciones", firstError);
     throw new Error(
       "La base no tiene las migraciones CRM/multicanal al día. " +
         "Re-ejecuta supabase/schema.sql completo en el SQL Editor de Supabase. " +
@@ -935,7 +1658,7 @@ export async function getAllChannelSettings(
     .from("channel_settings")
     .select("*")
     .eq("org_id", orgId);
-  if (error) fail("get channel_settings", error.message);
+  if (error) fail("get channel_settings", error);
   const map: Record<string, ChannelSettingsRow> = {};
   for (const row of (data ?? []) as ChannelSettingsRow[]) map[row.channel] = row;
   return map;
@@ -947,7 +1670,7 @@ export async function getAllChannelSettings(
 export async function listAllChannelSettings(): Promise<ChannelSettingsRow[]> {
   const sb = getSupabase();
   const { data, error } = await sb.from("channel_settings").select("*");
-  if (error) fail("list channel_settings", error.message);
+  if (error) fail("list channel_settings", error);
   return (data ?? []) as ChannelSettingsRow[];
 }
 
@@ -968,7 +1691,7 @@ export async function upsertChannelSettings(
     },
     { onConflict: "org_id,channel" }
   );
-  if (error) fail("upsert channel_settings", error.message);
+  if (error) fail("upsert channel_settings", error);
 }
 
 // ── Alarmas (renovaciones, pagos, recordatorios) ────────────
@@ -1016,7 +1739,7 @@ export async function listAlarms(orgId: number): Promise<Alarm[]> {
     .order("active", { ascending: false })
     .order("next_fire_at", { ascending: true })
     .limit(200);
-  if (error) fail("list alarms", error.message);
+  if (error) fail("list alarms", error);
   return (data ?? []) as Alarm[];
 }
 
@@ -1037,7 +1760,7 @@ export async function createAlarm(orgId: number, draft: AlarmDraft): Promise<Ala
     })
     .select()
     .single();
-  if (error) fail("create alarm", error.message);
+  if (error) fail("create alarm", error);
   return data as Alarm;
 }
 
@@ -1066,7 +1789,7 @@ export async function updateAlarm(
   let query = sb.from("alarms").update(update).eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { data, error } = await query.select().maybeSingle();
-  if (error) fail("update alarm", error.message);
+  if (error) fail("update alarm", error);
   return (data as Alarm | null) ?? null;
 }
 
@@ -1075,7 +1798,7 @@ export async function getAlarmById(id: number, orgId?: number): Promise<Alarm | 
   let query = sb.from("alarms").select("*").eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { data, error } = await query.maybeSingle();
-  if (error) fail("get alarm", error.message);
+  if (error) fail("get alarm", error);
   return (data as Alarm | null) ?? null;
 }
 
@@ -1084,7 +1807,7 @@ export async function deleteAlarm(id: number, orgId?: number): Promise<void> {
   let query = sb.from("alarms").delete().eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { error } = await query;
-  if (error) fail("delete alarm", error.message);
+  if (error) fail("delete alarm", error);
 }
 
 export async function getDueAlarms(limit = 10): Promise<Alarm[]> {
@@ -1096,7 +1819,7 @@ export async function getDueAlarms(limit = 10): Promise<Alarm[]> {
     .lte("next_fire_at", epoch())
     .order("next_fire_at", { ascending: true })
     .limit(limit);
-  if (error) fail("get due alarms", error.message);
+  if (error) fail("get due alarms", error);
   return (data ?? []) as Alarm[];
 }
 
@@ -1120,7 +1843,7 @@ export async function claimAlarmFire(
     .eq("next_fire_at", alarm.next_fire_at)
     .eq("active", true)
     .select("id");
-  if (error) fail("claim alarm", error.message);
+  if (error) fail("claim alarm", error);
   return (data ?? []).length > 0;
 }
 
@@ -1130,7 +1853,7 @@ export async function setAlarmError(id: number, message: string): Promise<void> 
     .from("alarms")
     .update({ last_error: message.slice(0, 500) })
     .eq("id", id);
-  if (error) fail("set alarm error", error.message);
+  if (error) fail("set alarm error", error);
 }
 
 // Aviso interno por WhatsApp (outbox kind='notify', sin conversación).
@@ -1145,32 +1868,27 @@ export async function enqueueNotify(orgId: number, phone: string, content: strin
     kind: "notify",
     org_id: orgId,
   });
-  if (error) fail("enqueue notify", error.message);
+  if (error) fail("enqueue notify", error);
 }
 
-// Dedupe cruzada de la API pública: un lead que llegó primero solo con
-// correo (canal 'api') y ahora llega con teléfono se ASCIENDE a WhatsApp en
-// la misma fila (conserva mensajes/notas/etapa) en vez de duplicarse.
-// Devuelve null si no había fila que ascender o si ya existe una
-// conversación de WhatsApp con ese teléfono (unique 23505).
-export async function upgradeApiLeadToWhatsapp(
+// Lead de la API pública que llegó solo con correo (canal 'api'). Solo
+// LECTURA: el correo de un formulario no está verificado, así que nunca se
+// usa para reasignar ese lead (con su historial y sus notas) al WhatsApp de
+// quien envíe el mismo correo — eso le entregaba los datos de una persona a
+// otra. El operador decide si son el mismo contacto.
+export async function findApiLeadByEmail(
   orgId: number,
-  email: string,
-  phone: string
+  email: string
 ): Promise<Conversation | null> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from("conversations")
-    .update({ channel: "whatsapp", external_id: phone, phone })
+    .select("*")
     .eq("org_id", orgId)
     .eq("channel", "api")
     .eq("external_id", email)
-    .select()
     .maybeSingle();
-  if (error) {
-    if (error.code === "23505") return null;
-    fail("upgrade api lead", error.message);
-  }
+  if (error) fail("find api lead", error);
   return (data as Conversation | null) ?? null;
 }
 
@@ -1197,7 +1915,7 @@ export async function listApiKeys(orgId: number): Promise<ApiKeyRow[]> {
     .select(API_KEY_COLUMNS)
     .eq("org_id", orgId)
     .order("id", { ascending: true });
-  if (error) fail("list api_keys", error.message);
+  if (error) fail("list api_keys", error);
   return (data ?? []) as unknown as ApiKeyRow[];
 }
 
@@ -1213,7 +1931,7 @@ export async function createApiKey(
     .insert({ org_id: orgId, label, key_hash: keyHash, key_prefix: keyPrefix })
     .select(API_KEY_COLUMNS)
     .single();
-  if (error) fail("create api_key", error.message);
+  if (error) fail("create api_key", error);
   return data as unknown as ApiKeyRow;
 }
 
@@ -1222,7 +1940,7 @@ export async function deleteApiKey(id: number, orgId?: number): Promise<void> {
   let query = sb.from("api_keys").delete().eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { error } = await query;
-  if (error) fail("delete api_key", error.message);
+  if (error) fail("delete api_key", error);
 }
 
 export async function findApiKeyByHash(keyHash: string): Promise<ApiKeyRow | null> {
@@ -1233,7 +1951,7 @@ export async function findApiKeyByHash(keyHash: string): Promise<ApiKeyRow | nul
     .eq("key_hash", keyHash)
     .eq("active", true)
     .maybeSingle();
-  if (error) fail("find api_key", error.message);
+  if (error) fail("find api_key", error);
   return (data as unknown as ApiKeyRow | null) ?? null;
 }
 
@@ -1255,7 +1973,7 @@ export async function getAppSetting<T>(orgId: number, key: string): Promise<T | 
     .eq("org_id", orgId)
     .eq("key", key)
     .maybeSingle();
-  if (error) fail("get app_settings", error.message);
+  if (error) fail("get app_settings", error);
   return (data?.value as T) ?? null;
 }
 
@@ -1264,7 +1982,7 @@ export async function setAppSetting(orgId: number, key: string, value: unknown):
   const { error } = await sb
     .from("app_settings")
     .upsert({ org_id: orgId, key, value, updated_at: epoch() }, { onConflict: "org_id,key" });
-  if (error) fail("set app_settings", error.message);
+  if (error) fail("set app_settings", error);
 }
 
 // ── Calendario ──────────────────────────────────────────────
@@ -1320,7 +2038,7 @@ export async function listCalendarEvents(
     .order("starts_at", { ascending: true })
     .order("id", { ascending: true })
     .limit(500);
-  if (error) fail("list calendar events", error.message);
+  if (error) fail("list calendar events", error);
   return (data ?? []) as CalendarEvent[];
 }
 
@@ -1345,7 +2063,7 @@ export async function createCalendarEvent(
     })
     .select()
     .single();
-  if (error) fail("create calendar event", error.message);
+  if (error) fail("create calendar event", error);
   return data as CalendarEvent;
 }
 
@@ -1369,7 +2087,7 @@ export async function updateCalendarEvent(
   let query = sb.from("calendar_events").update(update).eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { data, error } = await query.select().maybeSingle();
-  if (error) fail("update calendar event", error.message);
+  if (error) fail("update calendar event", error);
   return (data as CalendarEvent | null) ?? null;
 }
 
@@ -1378,7 +2096,7 @@ export async function deleteCalendarEvent(id: number, orgId?: number): Promise<v
   let query = sb.from("calendar_events").delete().eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { error } = await query;
-  if (error) fail("delete calendar event", error.message);
+  if (error) fail("delete calendar event", error);
 }
 
 // Seguimientos programados del CRM dentro de un rango: el calendario los
@@ -1408,7 +2126,7 @@ export async function listFollowUpsBetween(
     .lt("next_follow_up_at", to)
     .order("next_follow_up_at", { ascending: true })
     .limit(200);
-  if (error) fail("list follow-ups", error.message);
+  if (error) fail("list follow-ups", error);
   return (data ?? []) as FollowUpEntry[];
 }
 
@@ -1421,7 +2139,7 @@ export async function listQuickReplies(orgId: number): Promise<QuickReply[]> {
     .select("*")
     .eq("org_id", orgId)
     .order("title", { ascending: true });
-  if (error) fail("list quick replies", error.message);
+  if (error) fail("list quick replies", error);
   return (data ?? []) as QuickReply[];
 }
 
@@ -1436,7 +2154,7 @@ export async function createQuickReply(
     .insert({ org_id: orgId, title, content })
     .select()
     .single();
-  if (error) fail("create quick reply", error.message);
+  if (error) fail("create quick reply", error);
   return data as QuickReply;
 }
 
@@ -1445,5 +2163,5 @@ export async function deleteQuickReply(id: number, orgId?: number): Promise<void
   let query = sb.from("quick_replies").delete().eq("id", id);
   if (orgId !== undefined) query = query.eq("org_id", orgId);
   const { error } = await query;
-  if (error) fail("delete quick reply", error.message);
+  if (error) fail("delete quick reply", error);
 }

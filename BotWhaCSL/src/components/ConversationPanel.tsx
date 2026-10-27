@@ -25,11 +25,45 @@ interface PanelData {
   messages: Message[];
 }
 
+// Teléfono enmascarado para la línea "Respondiendo a" (+57 ··· 4567): con el
+// indicativo y los últimos 4 dígitos se distinguen homónimos de un vistazo.
+// Indicativo según las zonas E.164: +1 y +7 de un dígito, los bloques de tres
+// (+593, +507…) y el resto de dos. Null si no parece un teléfono.
+function maskPhone(raw: string | null): string | null {
+  const digits = raw?.replace(/^\+/, "") ?? "";
+  if (!/^\d{7,15}$/.test(digits)) return null;
+  const cc =
+    digits.match(/^(?:[17]|2[1-69]\d|3[578]\d|42\d|5[09]\d|6[7-9]\d|8[0578]\d|9[679]\d)/)?.[0] ??
+    digits.slice(0, 2);
+  return `+${cc} ··· ${digits.slice(-4)}`;
+}
+
+// Envíos que fallaron: al volver a esa conversación (desde otro chat u otra
+// vista) el composer recupera el texto y muestra el error. A nivel de
+// módulo: sobrevive a que el panel se desmonte al cambiar de vista. Se
+// borra recién cuando el operador edita o envía (leerlo no lo consume: en
+// desarrollo React monta los efectos dos veces) o cuando el mensaje aparece
+// en el hilo — el servidor lo guardó aunque la respuesta se perdiera, y
+// reintentarlo lo mandaría dos veces. afterId: último mensaje del hilo al
+// enviar (solo cuenta un mensaje igual POSTERIOR a ese).
+const unsentDrafts = new Map<number, { text: string; error: string; afterId: number }>();
+// Envíos en vuelo y quién avisar cuando terminan, también a nivel de módulo:
+// si el operador sale a otra vista y vuelve mientras el envío sigue en
+// curso, el panel nuevo mantiene bloqueado el composer (no se manda dos
+// veces) y muestra el error si el envío falla.
+const sendsInFlight = new Set<number>();
+const sendListeners = new Set<(conversationId: number) => void>();
+
 export default function ConversationPanel({ conversationId, onDeleted }: Props) {
   const [data, setData] = useState<PanelData | null>(null);
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
+  // Conversación con un envío en vuelo (no un booleano del panel: el envío
+  // lento de A no debe bloquear el composer de B al cambiar de chat).
+  const [sendingFor, setSendingFor] = useState<number | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [, refreshSending] = useState(0);
+  // Fallo del último cambio de modo IA/Humano (el toggle ya se revirtió).
+  const [modeError, setModeError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showLead, setShowLead] = useState(true);
@@ -42,11 +76,18 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
   // - currentIdRef: descarta la respuesta de una conversación ya deseleccionada
   //   (sin esto, un fetch lento de A podía pisar los datos de B recién abierta,
   //   o un 404 viejo deseleccionaba la conversación nueva).
-  // - seqRef: descarta GETs que resuelven fuera de orden; las mutaciones lo
-  //   incrementan para invalidar los GETs en vuelo previos al cambio.
+  // - seqRef numera cada GET: se aplica solo si es más nuevo que el último
+  //   APLICADO (appliedSeqRef) y posterior a la última mutación
+  //   (invalidSeqRef: envío o cambio de modo invalidan los GETs ya emitidos).
+  //   Antes ganaba solo el último EMITIDO: con GETs de más de 2s cada poll
+  //   descartaba al anterior y el chat se quedaba congelado.
+  // - inflightRef: GETs en vuelo, abortados al cambiar de chat o desmontar.
   const currentIdRef = useRef(conversationId);
   currentIdRef.current = conversationId;
   const seqRef = useRef(0);
+  const appliedSeqRef = useRef(0);
+  const invalidSeqRef = useRef(0);
+  const inflightRef = useRef(new Set<AbortController>());
 
   // onDeleted vive en un ref para que su identidad (que cambia con cada
   // render del padre) no recree refetch ni reinicie el efecto de polling.
@@ -57,11 +98,23 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
 
   const refetch = useCallback(async () => {
     const id = conversationId;
-    if (!id) return;
+    if (!id || currentIdRef.current !== id) return;
     const seq = ++seqRef.current;
+    const ctrl = new AbortController();
+    inflightRef.current.add(ctrl);
+    // Un GET colgado no puede frenar el polling (el siguiente poll espera a
+    // que este termine): a los 15s se aborta.
+    const timeout = setTimeout(() => ctrl.abort(), 15000);
+    // Vigente: no abortado, de la conversación abierta, más nuevo que lo ya
+    // aplicado y emitido después de la última mutación.
+    const fresh = () =>
+      !ctrl.signal.aborted &&
+      currentIdRef.current === id &&
+      seq > appliedSeqRef.current &&
+      seq > invalidSeqRef.current;
     try {
-      const res = await fetch(`/api/messages/${id}`, { cache: "no-store" });
-      if (currentIdRef.current !== id || seq !== seqRef.current) return; // obsoleta
+      const res = await fetch(`/api/messages/${id}`, { cache: "no-store", signal: ctrl.signal });
+      if (!fresh()) return; // obsoleta
       if (res.status === 404) {
         // La conversación fue borrada (quizás desde otra pestaña).
         onDeletedRef.current();
@@ -69,10 +122,14 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
       }
       if (!res.ok) return;
       const payload = (await res.json()) as PanelData;
-      if (currentIdRef.current !== id || seq !== seqRef.current) return;
+      if (!fresh()) return;
+      appliedSeqRef.current = seq;
       setData(payload);
     } catch {
-      /* reintenta en el próximo poll */
+      /* abortado o error de red: reintenta en el próximo poll */
+    } finally {
+      clearTimeout(timeout);
+      inflightRef.current.delete(ctrl);
     }
   }, [conversationId]);
 
@@ -81,13 +138,34 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
     setData(null);
     setInput("");
     setSendError(null);
+    setModeError(null);
     setConfirmingDelete(false);
     lastMessageIdRef.current = null;
     if (!conversationId) return;
 
-    refetch();
-    const timer = setInterval(refetch, 2000);
-    return () => clearInterval(timer);
+    // Un envío a este chat que falló con el operador en otro: se le devuelve
+    // el texto con el error en vez de perderlo en silencio.
+    const draft = unsentDrafts.get(conversationId);
+    if (draft) {
+      setInput(draft.text);
+      setSendError(draft.error);
+    }
+
+    // Los polls nunca se solapan: el siguiente se agenda 2s DESPUÉS de que
+    // termine el anterior (con setInterval, si el GET tardaba más de 2s, cada
+    // uno invalidaba al previo y no se aplicaba ninguno).
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await refetch();
+      if (!stopped) timer = setTimeout(poll, 2000);
+    };
+    poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      inflightRef.current.forEach((ctrl) => ctrl.abort());
+    };
   }, [conversationId, refetch]);
 
   // Auto-scroll al fondo solo cuando entra un mensaje nuevo.
@@ -99,49 +177,133 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
     }
   }, [data]);
 
+  // Un envío "fallido" que en realidad el servidor guardó (se cortó la
+  // respuesta): al aparecer en el hilo se retiran el error y el texto.
+  useEffect(() => {
+    if (!data) return;
+    const id = data.conversation.id;
+    const draft = unsentDrafts.get(id);
+    if (!draft) return;
+    const content = draft.text.trim();
+    const landed = data.messages.some((m) => m.id > draft.afterId && m.role === "human" && m.content.trim() === content);
+    if (!landed) return;
+    unsentDrafts.delete(id);
+    if (currentIdRef.current !== id) return;
+    setSendError(null);
+    setInput((prev) => (prev.trim() === content ? "" : prev));
+  }, [data]);
+
+  // Al terminar un envío de ESTE chat (aunque lo haya empezado otro panel
+  // antes de cambiar de vista): se actualiza el "Enviando..." y, si falló,
+  // se muestra el error con el texto.
+  useEffect(() => {
+    const onSettled = (id: number) => {
+      if (currentIdRef.current !== id) return;
+      refreshSending((n) => n + 1);
+      const draft = unsentDrafts.get(id);
+      if (draft) {
+        setSendError(draft.error);
+        setInput((prev) => (prev.trim() ? prev : draft.text));
+      }
+    };
+    sendListeners.add(onSettled);
+    return () => {
+      sendListeners.delete(onSettled);
+    };
+  }, []);
+
+  // El operador edita: el borrador guardado ya no aplica.
+  const editInput = (update: (prev: string) => string) => {
+    if (conversationId) unsentDrafts.delete(conversationId);
+    setInput(update);
+  };
+
   const changeMode = async (mode: ConversationMode) => {
-    if (!conversationId || !data) return;
-    // Optimista: refleja el cambio de inmediato; el refetch del finally
-    // confirma con la verdad del servidor (o revierte si el POST falló).
+    const id = conversationId;
+    if (!id || !data) return;
+    const previous = data.conversation.mode;
+    // Optimista: refleja el cambio de inmediato. Si el POST falla se revierte
+    // al momento y se avisa junto al toggle (antes solo iba a la consola y la
+    // pantalla podía decir "Humano" con la IA todavía respondiendo).
     setData({ ...data, conversation: { ...data.conversation, mode } });
-    seqRef.current++; // invalida GETs en vuelo con el modo anterior
+    setModeError(null);
+    invalidSeqRef.current = seqRef.current; // invalida GETs en vuelo con el modo anterior
+    let ok = false;
     try {
-      const res = await fetch(`/api/mode/${conversationId}`, {
+      const res = await fetch(`/api/mode/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode }),
       });
+      ok = res.ok;
       if (!res.ok) console.error("No se pudo cambiar el modo:", res.status);
     } catch (err) {
       console.error("No se pudo cambiar el modo:", err);
-    } finally {
-      refetch();
     }
+    if (currentIdRef.current !== id) return; // el operador ya está en otro chat
+    if (ok) {
+      setModeError(null);
+    } else {
+      // Solo si el toggle sigue mostrando el modo optimista de este chat.
+      setData((prev) =>
+        prev && prev.conversation.id === id && prev.conversation.mode === mode
+          ? { ...prev, conversation: { ...prev.conversation, mode: previous } }
+          : prev
+      );
+      setModeError("No se pudo cambiar el modo. Reintenta.");
+    }
+    // Los GETs emitidos durante el POST pudieron leer el modo anterior: se
+    // descartan y el refetch confirma con la verdad del servidor.
+    invalidSeqRef.current = seqRef.current;
+    refetch();
   };
 
   const sendHuman = async () => {
-    const content = input.trim();
-    if (!conversationId || !content || sending) return;
-    setSending(true);
+    // Conversación y texto se fijan AL ENVIAR: si el operador cambia de chat
+    // con el POST en vuelo, el resultado nunca toca el composer de otro chat.
+    const id = conversationId;
+    const text = input;
+    const content = text.trim();
+    if (!id || !content || sendingFor === id || sendsInFlight.has(id)) return;
+    setSendingFor(id);
     setSendError(null);
+    unsentDrafts.delete(id);
+    const afterId = data?.conversation.id === id ? (data.messages[data.messages.length - 1]?.id ?? 0) : 0;
+    // Fallo: queda guardado y, al terminar el envío, lo muestra el panel que
+    // esté abierto en ESTE chat (este mismo, o uno nuevo si el operador salió
+    // a otra vista y volvió); si está en otro chat, al volver.
+    const fail = (error: string) => {
+      unsentDrafts.set(id, { text, error, afterId });
+    };
+    sendsInFlight.add(id);
     try {
-      seqRef.current++; // invalida GETs en vuelo previos al envío
-      const res = await fetch(`/api/messages/${conversationId}`, {
+      invalidSeqRef.current = seqRef.current; // invalida GETs en vuelo previos al envío
+      const res = await fetch(`/api/messages/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),
       });
       if (res.ok) {
-        setInput("");
-        await refetch();
+        if (currentIdRef.current === id) {
+          // Se quita SOLO lo enviado: lo que el operador escribió mientras se
+          // enviaba se conserva (y lo ya enviado no queda para mandarse dos
+          // veces con el próximo Enter).
+          setInput((prev) =>
+            prev.trim() === content ? "" : prev.startsWith(text) ? prev.slice(text.length).trimStart() : prev
+          );
+          await refetch();
+        }
       } else {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        setSendError(body?.error ?? "No se pudo enviar el mensaje. Reintenta.");
+        fail(body?.error ?? "No se pudo enviar el mensaje. Reintenta.");
       }
     } catch {
-      setSendError("Error de red al enviar. Reintenta.");
+      fail("Error de red al enviar. Reintenta.");
     } finally {
-      setSending(false);
+      sendsInFlight.delete(id);
+      // Libera solo su conversación: otro chat pudo empezar su propio envío.
+      setSendingFor((prev) => (prev === id ? null : prev));
+      sendListeners.forEach((notify) => notify(id));
     }
   };
 
@@ -169,7 +331,9 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
     );
   }
 
-  if (!data) {
+  // En el render del cambio de chat, data aún es la del anterior (el efecto
+  // la limpia después): nunca se pinta un chat bajo la selección de otro.
+  if (!data || data.conversation.id !== conversationId) {
     return (
       <section className="flex flex-1 items-center justify-center bg-neutral-950">
         <span className="h-6 w-6 animate-spin rounded-full border-2 border-neutral-700 border-t-neutral-300" />
@@ -179,6 +343,12 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
 
   const { conversation, messages } = data;
   const isHuman = conversation.mode === "HUMAN";
+  const sending = sendingFor === conversationId || (conversationId !== null && sendsInFlight.has(conversationId));
+  // Destinatario junto al composer: nombre + teléfono enmascarado (sin
+  // nombre, el nombre visible ya es el teléfono completo).
+  const recipientPhone = conversation.name
+    ? maskPhone(conversation.phone ?? conversation.external_id)
+    : null;
 
   return (
     <div className="flex min-w-0 flex-1">
@@ -218,7 +388,14 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
           {/* Los leads del canal 'api' no tienen canal de salida: el toggle
               IA/Humano no aplica (nadie puede responderles desde aquí). */}
           {conversation.channel !== "api" && (
-            <ModeToggle mode={conversation.mode} onChange={changeMode} />
+            <>
+              {modeError && (
+                <p className="max-w-44 text-right text-xs leading-tight text-red-400">
+                  {modeError}
+                </p>
+              )}
+              <ModeToggle mode={conversation.mode} onChange={changeMode} />
+            </>
           )}
           <button
             onClick={() => setShowLead(!showLead)}
@@ -261,13 +438,25 @@ export default function ConversationPanel({ conversationId, onDeleted }: Props) 
           />
         ) : isHuman ? (
           <>
+            {/* Destinatario siempre a la vista: con muchos chats a la vez, el
+                operador confirma a quién le escribe antes de enviar. */}
+            <p className="mb-2 truncate text-xs text-neutral-500">
+              Respondiendo a{" "}
+              <span className="font-medium text-neutral-200">
+                {conversationDisplayName(conversation)}
+              </span>
+              {recipientPhone && ` · ${recipientPhone}`}
+            </p>
             <div className="flex gap-2">
               <QuickReplies
-                onInsert={(content) => setInput((prev) => (prev ? `${prev} ${content}` : content))}
+                onInsert={(content) => editInput((prev) => (prev ? `${prev} ${content}` : content))}
               />
               <input
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  editInput(() => value);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();

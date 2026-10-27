@@ -52,8 +52,11 @@ export async function getAiAgentsCached(orgId: number): Promise<AiAgent[]> {
     cache.set(orgId, { at: now, agents });
     return agents;
   } catch (err) {
+    // Sin caché (recién arrancado) se propaga: el motor reintenta en vez de
+    // responder sin los agentes configurados.
+    if (!hit) throw err;
     console.error("[bot] No se pudieron leer los agentes de IA (se usa el caché):", err);
-    return hit?.agents ?? [];
+    return hit.agents;
   }
 }
 

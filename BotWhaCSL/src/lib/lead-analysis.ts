@@ -2,7 +2,7 @@
 // conversación, recomienda el próximo paso para cerrar y extrae datos de
 // contacto. Lo usa el bot (automático, con debounce) y la API del dashboard
 // (botón "Analizar ahora").
-import { getLlm, maxTokensParam } from "./llm";
+import { getLlm, maxTokensParam, withLlmSlot } from "./llm";
 import {
   getConversationById,
   getRecentHistory,
@@ -54,17 +54,20 @@ export async function analyzeLead(conversationId: number): Promise<Conversation 
     .join("\n");
 
   const { client, model, provider } = await getLlm(convo.org_id);
-  const completion = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: ANALYSIS_PROMPT },
-      { role: "user", content: `Conversación:\n${transcript}` },
-    ],
-    // La capa compatible de Anthropic no soporta response_format; el prompt
-    // ya exige JSON y el parse de abajo valida (con error claro si no).
-    ...(provider === "anthropic" ? {} : { response_format: { type: "json_object" as const } }),
-    ...maxTokensParam(provider, 500),
-  });
+  // Comparte el cupo de llamadas simultáneas con las respuestas a clientes.
+  const completion = await withLlmSlot(() =>
+    client.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: ANALYSIS_PROMPT },
+        { role: "user", content: `Conversación:\n${transcript}` },
+      ],
+      // La capa compatible de Anthropic no soporta response_format; el prompt
+      // ya exige JSON y el parse de abajo valida (con error claro si no).
+      ...(provider === "anthropic" ? {} : { response_format: { type: "json_object" as const } }),
+      ...maxTokensParam(provider, 500),
+    })
+  );
 
   const raw = completion.choices[0]?.message?.content;
   if (!raw) throw new Error("El análisis de IA devolvió vacío");

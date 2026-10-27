@@ -1406,3 +1406,197 @@ $$;
 
 revoke execute on function list_conversations(bigint) from public, anon, authenticated;
 grant execute on function list_conversations(bigint) to service_role;
+
+-- ============================================================
+-- BLINDAJE DEL PIPELINE DE MENSAJES (aditivo e idempotente)
+-- 1) messages.channel_msg_id: id del mensaje en su canal (key.id de
+--    Baileys, wamid de Meta, o el id que el bot genera al enviar). Con el
+--    índice único, guardar un mensaje es IDEMPOTENTE: un reintento tras un
+--    corte de red o una re-entrega del canal nunca lo duplica (ni dispara
+--    una segunda respuesta).
+-- 2) messages.sent_at: cuándo lo escribió el cliente según el canal (el
+--    hilo se ordena por llegada; esta hora decide si es demasiado viejo
+--    para responderlo solo, también tras un reinicio).
+-- 3) covers_msg_id (messages y outbox): hasta qué mensaje del cliente
+--    alcanzó a ver cada respuesta del bot. Tras un reinicio el bot sabe con
+--    exactitud qué quedó sin responder (una respuesta guardada después de
+--    un mensaje nuevo del cliente no lo cubre).
+-- 4) pending_ai_replies: conversaciones en modo IA con un mensaje del
+--    cliente que ninguna respuesta cubre — el bot las retoma tras un
+--    reinicio, un corte o un fallo del proveedor de IA. Los seguimientos
+--    programados ('followup:…') y los mensajes automáticos de WhatsApp
+--    Business ('auto:…') no cuentan como respuesta.
+-- 5) outbox.channel_msg_id / account_phone (respuestas del bot en cola): el
+--    id con que se intentó en vivo — encolar es idempotente y, si el intento
+--    en vivo sí había salido, WhatsApp descarta la segunda copia — y el
+--    número de la cuenta al que escribió el cliente (si la cuenta se
+--    re-vincula a otro número, la respuesta no sale desde ese).
+-- El código funciona sin esta sección (modo compatible); al ejecutarla se
+-- activa sola, sin reiniciar nada.
+-- ============================================================
+
+alter table messages add column if not exists channel_msg_id text;
+alter table messages add column if not exists sent_at bigint;
+alter table messages add column if not exists covers_msg_id bigint;
+alter table outbox add column if not exists covers_msg_id bigint;
+alter table outbox add column if not exists channel_msg_id text;
+alter table outbox add column if not exists account_phone text;
+
+-- NULLs distintos: los mensajes sin id de canal no chocan entre sí.
+create unique index if not exists idx_messages_conv_channel_msg
+  on messages (conversation_id, channel_msg_id);
+create unique index if not exists idx_outbox_channel_msg
+  on outbox (channel_msg_id) where channel_msg_id is not null;
+-- Respuestas en cola de una conversación (el motor las consulta en cada pase).
+create index if not exists idx_outbox_conv_pending
+  on outbox (conversation_id) where sent in (0, 3);
+
+create index if not exists idx_conversations_mode_last
+  on conversations (mode, last_message_at);
+
+drop function if exists insert_message_v2(bigint, text, text, text, bigint);
+create or replace function insert_message_v2(
+  p_conversation_id bigint,
+  p_role text,
+  p_content text,
+  p_channel_msg_id text default null,
+  p_created_at bigint default null,
+  p_sent_at bigint default null,
+  p_covers_msg_id bigint default null
+) returns jsonb
+language plpgsql as $$
+declare
+  m messages;
+  v_now bigint := extract(epoch from now())::bigint;
+  -- Nunca en el futuro (reloj del remitente).
+  v_at bigint := least(coalesce(p_created_at, v_now), v_now);
+begin
+  insert into messages (conversation_id, role, content, channel_msg_id, created_at, sent_at, covers_msg_id)
+  values (p_conversation_id, p_role, p_content, p_channel_msg_id, v_at,
+          -- least() ignora NULLs: sin hora del canal, sent_at queda NULL.
+          case when p_sent_at is null then null else least(p_sent_at, v_now) end,
+          p_covers_msg_id)
+  on conflict (conversation_id, channel_msg_id) do nothing
+  returning * into m;
+
+  if m.id is null then
+    -- Ya estaba guardado (re-entrega o reintento): se devuelve el existente.
+    select * into m from messages
+    where conversation_id = p_conversation_id and channel_msg_id = p_channel_msg_id;
+    return jsonb_build_object('message', to_jsonb(m), 'inserted', false);
+  end if;
+
+  -- greatest(): un mensaje que llega tarde no retrocede la actividad.
+  update conversations
+  set last_message_at = greatest(coalesce(last_message_at, 0), m.created_at),
+      last_user_message_at = case when p_role = 'user'
+                                  then greatest(coalesce(last_user_message_at, 0), m.created_at)
+                                  else last_user_message_at end
+  where id = p_conversation_id;
+
+  return jsonb_build_object('message', to_jsonb(m), 'inserted', true);
+end;
+$$;
+
+-- Conversaciones en modo IA con un mensaje del cliente que NADIE cubrió:
+-- ningún asesor escribió después (los envíos automáticos 'followup:…' y
+-- 'auto:…' no cuentan) y ninguna respuesta del bot lo cubre — una respuesta
+-- guardada después de él pero que no lo vio (covers_msg_id menor) no lo
+-- cubre; las anteriores a la migración (sin covers_msg_id) cubren todo lo
+-- previo a ellas. Con actividad desde p_since (opcionalmente de un solo
+-- canal), las más recientes primero. Excluye las que ya tienen una respuesta
+-- del bot esperando entrega en el outbox ('bot' / 'bot_fixed').
+drop function if exists pending_ai_replies(bigint, integer);
+create or replace function pending_ai_replies(
+  p_since bigint,
+  p_limit integer default 100,
+  p_channel text default null
+)
+returns table (
+  conversation_id bigint,
+  org_id bigint,
+  channel text,
+  last_message_id bigint,
+  last_message_at bigint
+)
+language sql stable as $$
+  select c.id, c.org_id, c.channel, lu.id, lu.created_at
+  from conversations c
+  cross join lateral (
+    select m.id, m.created_at
+    from messages m
+    where m.conversation_id = c.id and m.role = 'user'
+    order by m.created_at desc, m.id desc
+    limit 1
+  ) lu
+  where c.mode = 'AI'
+    and c.channel in ('whatsapp', 'whatsapp_api')
+    and (p_channel is null or c.channel = p_channel)
+    and c.last_message_at >= p_since
+    and not exists (
+      select 1 from messages h
+      where h.conversation_id = c.id and h.role = 'human'
+        and coalesce(h.channel_msg_id, '') !~ '^(followup|auto):'
+        and (h.created_at, h.id) > (lu.created_at, lu.id)
+    )
+    and not exists (
+      select 1 from messages a
+      where a.conversation_id = c.id and a.role = 'assistant'
+        and (a.created_at, a.id) > (lu.created_at, lu.id)
+        and (a.covers_msg_id is null or a.covers_msg_id >= lu.id)
+    )
+    and not exists (
+      select 1 from outbox o
+      where o.conversation_id = c.id and o.kind in ('bot', 'bot_fixed') and o.sent in (0, 3)
+    )
+  order by lu.created_at desc
+  limit p_limit;
+$$;
+
+-- follow_up_sent / follow_up_failed: limpian el recordatorio del lead
+-- también cuando ya no queda ningún seguimiento pendiente de esa
+-- conversación — los reintentos y aplazamientos del outbox cambian
+-- scheduled_at y la comparación exacta dejaba el recordatorio colgado.
+create or replace function follow_up_sent(
+  p_conversation_id bigint,
+  p_scheduled_at bigint
+) returns void
+language plpgsql as $$
+begin
+  update conversations
+  set next_follow_up_at = null, follow_up_note = null
+  where id = p_conversation_id
+    and (next_follow_up_at is not distinct from p_scheduled_at
+         or not exists (select 1 from outbox o
+                        where o.conversation_id = p_conversation_id
+                          and o.kind = 'followup' and o.sent in (0, 3)));
+
+  insert into lead_events (conversation_id, type, detail)
+  values (p_conversation_id, 'followup_sent', 'Seguimiento automático enviado');
+end;
+$$;
+
+create or replace function follow_up_failed(
+  p_conversation_id bigint,
+  p_scheduled_at bigint
+) returns void
+language plpgsql as $$
+begin
+  update conversations
+  set next_follow_up_at = null, follow_up_note = null
+  where id = p_conversation_id
+    and (next_follow_up_at is not distinct from p_scheduled_at
+         or not exists (select 1 from outbox o
+                        where o.conversation_id = p_conversation_id
+                          and o.kind = 'followup' and o.sent in (0, 3)));
+
+  insert into lead_events (conversation_id, type, detail)
+  values (p_conversation_id, 'followup_failed',
+          'El seguimiento automático NO pudo entregarse (se agotaron los reintentos)');
+end;
+$$;
+
+revoke execute on function insert_message_v2(bigint, text, text, text, bigint, bigint, bigint) from public, anon, authenticated;
+grant execute on function insert_message_v2(bigint, text, text, text, bigint, bigint, bigint) to service_role;
+revoke execute on function pending_ai_replies(bigint, integer, text) from public, anon, authenticated;
+grant execute on function pending_ai_replies(bigint, integer, text) to service_role;

@@ -8,7 +8,7 @@
 // necesitan datos frescos (rol, activo) releen el miembro con requireMember.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
-import { getTeamMemberById, type TeamMember } from "./db";
+import { getTeamMemberById, withDbRetry, type TeamMember } from "./db";
 
 export const SESSION_COOKIE = "agente_session";
 export const SESSION_TTL_SECONDS = 7 * 24 * 3600;
@@ -63,7 +63,8 @@ export function verifySessionToken(token: string | undefined | null): number | n
 export async function getSessionMember(req: NextRequest): Promise<TeamMember | null> {
   const memberId = verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
   if (memberId === null) return null;
-  const member = await getTeamMemberById(memberId);
+  // Lectura: se reintenta ante un blip de la base (no sacar al operador).
+  const member = await withDbRetry(() => getTeamMemberById(memberId), { attempts: 3, baseDelayMs: 300 });
   if (!member || !member.active) return null;
   return member;
 }

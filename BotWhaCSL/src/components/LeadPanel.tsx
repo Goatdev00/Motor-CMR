@@ -22,6 +22,11 @@ const EVENT_LABELS: Record<string, string> = {
   handoff: "Derivado a humano",
   assigned: "Asignación",
   import: "Importado",
+  keyword: "Palabra clave",
+  delivery_error: "Error de entrega",
+  delivery_retry: "Entrega en cola",
+  delivery_uncertain: "Entrega sin confirmar",
+  auto_reply_skipped: "Sin respuesta automática",
 };
 
 // Acepta formatos locales ("2.500.000", "1,5", "$ 3000"). Devuelve null para

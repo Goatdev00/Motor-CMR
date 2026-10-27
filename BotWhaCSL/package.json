@@ -12,6 +12,7 @@
     "build": "next build",
     "start": "next start -p 3013",
     "typecheck": "tsc --noEmit",
+    "test:concurrency": "node tests/concurrency/run.mjs",
     "start:bot": "tsx scripts/start-bot.ts",
     "start:all": "concurrently --kill-others --names BOT,WEB --prefix-colors yellow,cyan \"npm run start:bot\" \"npm run start\"",
     "dev:all": "concurrently --kill-others --names BOT,WEB --prefix-colors yellow,cyan \"npm run start:bot\" \"npm run dev\"",

@@ -3,45 +3,60 @@
 // ⚠️ env-loader DEBE ser el primer import (ver comentario en env-loader.ts).
 import "./env-loader";
 import {
+  addLeadEvent,
   assertCrmMigration,
   claimAlarmFire,
-  claimOutboxItem,
-  deferOutboxItem,
   enqueueNotify,
-  getConversationById,
   getDueAlarms,
-  getPendingOutbox,
-  insertMessage,
+  isTransientDbError,
   listAllChannelSettings,
   listTeamMembers,
   listWaAccounts,
-  markFollowUpFailed,
-  markFollowUpSent,
-  markOutboxSent,
-  releaseOutboxFailure,
-  resetInFlightOutbox,
   setAlarmError,
   updateWaAccount,
   type Alarm,
   type ChannelSettingsRow,
-  type OutboxItem,
-  type TeamMember,
   type WaAccount,
 } from "../src/lib/db";
 import path from "node:path";
 import fs from "node:fs";
+import { generateMessageIDV2 } from "@whiskeysockets/baileys";
 import {
-  anySessionOpen,
   authDirFor,
   getAllSessions,
-  getOpenSession,
   getOrCreateSession,
   getSession,
   removeSession,
+  setDeliveryErrorHook,
   setInternalPhones,
-  type BaileysSession,
 } from "../src/lib/baileys/client";
-import { sendChannelText } from "../src/lib/meta";
+import {
+  beginInboundShutdown,
+  flushDeferredInbound,
+  hasUnsavedInbound,
+  replayInboundSpool,
+  restoreSpooledContacts,
+} from "../src/lib/baileys/handler";
+import { recoverJournal, setAsidePreviousJournal } from "../src/lib/inbound-spool";
+import {
+  flushOutbox,
+  flushOutboxBookkeeping,
+  rememberAccounts,
+  resetInFlightOnce,
+  sendBotReply,
+  stopOutbox,
+  withTimeout,
+} from "../src/lib/outbox-worker";
+import {
+  busyChains,
+  configureReplyEngine,
+  drainReplies,
+  flushPendingRecords,
+  runRecoverySweep,
+} from "../src/lib/reply-engine";
+import { logRepeated } from "../src/lib/repeated-log";
+import { fileRetryStore } from "../src/lib/reply-retry-store";
+import { acquireInstanceLock, type InstanceLock } from "./instance-lock";
 import { getLlmProviderInfo } from "../src/lib/llm";
 
 // Red de seguridad: en redes inestables Baileys a veces rechaza promesas
@@ -205,9 +220,12 @@ function migrateLegacyAuthDir(firstAccountId: number | undefined): void {
 // cada ~30s; los de cuentas, en cada tick junto con wa_accounts.
 let memberPhonesByOrg = new Map<number, string[]>();
 let internalPhonesTick = 0;
+let memberPhonesLoaded = false;
 
 async function refreshInternalPhones(accounts: WaAccount[]): Promise<void> {
-  if (internalPhonesTick % 15 === 0) {
+  // Mientras la lectura falle se reintenta en CADA tick (al arrancar, una
+  // lista vacía dejaba pasar avisos internos como si fueran leads).
+  if (!memberPhonesLoaded || internalPhonesTick % 15 === 0) {
     try {
       const members = await listTeamMembers();
       const byOrg = new Map<number, string[]>();
@@ -218,6 +236,7 @@ async function refreshInternalPhones(accounts: WaAccount[]): Promise<void> {
         byOrg.set(m.org_id, list);
       }
       memberPhonesByOrg = byOrg;
+      memberPhonesLoaded = true;
     } catch {
       /* se conserva la lista anterior */
     }
@@ -353,23 +372,6 @@ async function flushAlarms(): Promise<void> {
   }
 }
 
-// Cinturón anti-duplicados: ids que YA salieron por WhatsApp pero cuyo
-// UPDATE sent=1 falló (blip de Supabase). No se reenvían; solo se reintenta
-// el marcado en ticks siguientes.
-const sentUnrecorded = new Set<number>();
-
-// Pasos post-entrega de un seguimiento (registrar el mensaje en el hilo +
-// limpiar el recordatorio). Si Supabase parpadea justo ahí, se reintenta en
-// ticks siguientes (máx 5) en vez de perderse.
-interface FollowupFinalize {
-  conversationId: number;
-  content: string;
-  scheduledAt: number | null;
-  messageInserted: boolean;
-  attempts: number;
-}
-const pendingFinalize = new Map<number, FollowupFinalize>();
-
 // Últimos valores conocidos (ante blips de Supabase se conserva el estado
 // en vez de re-encender/apagar sesiones con datos a medias).
 // Multi-organización: el interruptor maestro de WhatsApp y la configuración
@@ -393,253 +395,96 @@ function groupSettingsByOrg(
   return map;
 }
 
-async function finalizeFollowup(outboxId: number, f: FollowupFinalize): Promise<void> {
-  if (!f.messageInserted) {
-    await insertMessage(f.conversationId, "human", f.content);
-    f.messageInserted = true; // no duplicar el mensaje si el paso 2 falla
-  }
-  await markFollowUpSent(f.conversationId, f.scheduledAt);
-  pendingFinalize.delete(outboxId);
-}
+// Pedido de apagado por archivo (lo usa el lanzador local para cerrar un bot
+// anterior sin matarlo a la fuerza).
+const STOP_FILE = path.resolve(process.cwd(), "auth", "bot.stop");
 
-// ── Resolución de la cuenta de WhatsApp para un envío ───────
-// Prioridad: cuenta explícita del item → cuenta del vendedor asignado (así
-// el chat "se redirige" al vendedor según la etapa) → cuenta por la que
-// habla el lead → cualquier cuenta conectada. Cada eslabón se prueba en
-// orden (getOpenSession(preferred) cae a "cualquiera" por sí solo, lo que
-// saltaría la cuenta del lead si la del vendedor está caída). Siempre se
-// entrega si hay alguna sesión abierta: mejor salir por otra cuenta que no
-// salir.
-async function resolveWaSession(
-  item: OutboxItem,
-  getMembers: () => Promise<Map<number, TeamMember>>
-): Promise<BaileysSession | null> {
-  // TODAS las resoluciones quedan confinadas a la organización del envío:
-  // un lead de un cliente jamás recibe mensajes desde el WhatsApp de otro.
-  if (item.wa_account_id != null) return getOpenSession(item.wa_account_id, item.org_id);
-  if (item.kind === "notify" || item.conversation_id == null) {
-    return getOpenSession(null, item.org_id);
-  }
-  try {
-    const conv = await getConversationById(item.conversation_id);
-    if (conv) {
-      const candidates: number[] = [];
-      if (conv.assigned_member_id != null) {
-        const member = (await getMembers()).get(conv.assigned_member_id);
-        if (member?.active && member.wa_account_id != null) {
-          candidates.push(member.wa_account_id);
-        }
-      }
-      if (conv.wa_account_id != null) candidates.push(conv.wa_account_id);
-      for (const accountId of candidates) {
-        const s = getSession(accountId);
-        if (s?.isOpen() && s.orgId === item.org_id) return s;
-      }
-    }
-  } catch {
-    /* fallback a cualquier sesión abierta de la organización */
-  }
-  return getOpenSession(null, item.org_id);
-}
+// Marca de instancia única: un solo bot por instalación (instance-lock.ts).
+const LOCK_FILE = path.resolve(process.cwd(), "auth", "bot.lock");
+let instanceLock: InstanceLock | null = null;
 
-// Envío según canal: WhatsApp usa la sesión resuelta; WhatsApp Cloud API
-// va por HTTPS (Graph API) con los tokens de la organización del envío.
-async function deliverOutboxItem(
-  item: OutboxItem,
-  getMembers: () => Promise<Map<number, TeamMember>>
-): Promise<void> {
-  if (item.channel === "whatsapp") {
-    const session = await resolveWaSession(item, getMembers);
-    if (!session) {
-      throw new Error(`Ninguna cuenta de WhatsApp conectada en la organización ${item.org_id}`);
-    }
-    await session.send(`${item.phone}@s.whatsapp.net`, item.content);
-    return;
-  }
-  await sendChannelText(item.org_id, item.channel, item.phone, item.content);
-}
-
-// ¿Se puede intentar la entrega ahora? (evita reclamar filas que no van a
-// poder enviarse: sin sesiones de WhatsApp de SU organización o canal
-// WhatsApp API deshabilitado en SU organización).
-function isDeliverable(
-  item: OutboxItem,
-  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null
-): boolean {
-  if (item.channel === "api") return false; // sin canal de respuesta, nunca
-  if (item.channel === "whatsapp") return anySessionOpen(item.org_id);
-  const row = settingsByOrg?.get(item.org_id)?.[item.channel];
-  return row?.enabled ?? false;
-}
-
-async function flushOutbox(
-  settingsByOrg: Map<number, Record<string, ChannelSettingsRow>> | null
-): Promise<void> {
-  // Exclusiones GLOBALES de la consulta (inanición por limit): 'api' nunca
-  // entrega, y 'whatsapp' solo si no hay NINGUNA sesión abierta en ninguna
-  // organización. El detalle por organización lo decide isDeliverable.
-  const disabledChannels = new Set<string>();
-  if (!anySessionOpen()) disabledChannels.add("whatsapp");
-  disabledChannels.add("api");
-
-  // Miembros del equipo: se cargan una sola vez por flush y solo si algún
-  // envío de WhatsApp los necesita (resolución de la cuenta del asignado).
-  let membersPromise: Promise<Map<number, TeamMember>> | null = null;
-  const getMembers = () => {
-    if (!membersPromise) {
-      membersPromise = listTeamMembers()
-        .then((list) => new Map(list.map((m) => [m.id, m])))
-        .catch(() => new Map<number, TeamMember>());
-    }
-    return membersPromise;
-  };
-
-  // Reintentos diferidos de ticks anteriores.
-  for (const id of [...sentUnrecorded]) {
+// Al arrancar: reintenta mientras el error sea de disponibilidad de la base
+// (red, timeout, Supabase reiniciando); un error de verdad se propaga.
+async function untilDbAvailable<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
     try {
-      await markOutboxSent(id);
-      sentUnrecorded.delete(id);
-    } catch {
-      /* siguiente tick */
-    }
-  }
-  for (const [id, f] of [...pendingFinalize]) {
-    try {
-      await finalizeFollowup(id, f);
+      return await fn();
     } catch (err) {
-      f.attempts += 1;
-      if (f.attempts >= 5) {
-        pendingFinalize.delete(id);
-        console.error(
-          `[bot] ⚠️ Se abandona la finalización del seguimiento #${id} (¿conversación borrada?):`,
-          err
-        );
-      }
-    }
-  }
-
-  const pending = await getPendingOutbox(20, [...disabledChannels]);
-  for (const item of pending) {
-    if (sentUnrecorded.has(item.id) || pendingFinalize.has(item.id)) continue;
-    if (!isDeliverable(item, settingsByOrg)) {
-      // Su organización no puede entregar ahora: se difiere 30s para que no
-      // tapone el lote de las demás (sin quemar intentos).
-      deferOutboxItem(item.id, 30).catch(() => undefined);
-      continue;
-    }
-
-    // Reclamo condicional (sent=0 → 3): si el operador canceló o reprogramó
-    // el seguimiento (o borró la conversación) mientras este lote estaba en
-    // memoria, la fila ya no está pendiente y NO se envía.
-    let claimed = false;
-    try {
-      claimed = await claimOutboxItem(item.id);
-    } catch (err) {
-      console.error(`[bot] No se pudo reclamar outbox #${item.id}:`, err);
-      continue;
-    }
-    if (!claimed) {
-      console.log(`[bot] Outbox #${item.id} ya no está pendiente (cancelado/reprogramado); no se envía`);
-      continue;
-    }
-
-    try {
-      await deliverOutboxItem(item, getMembers);
-    } catch (err) {
-      console.error(`[bot] Falló envío de outbox #${item.id} [${item.channel}]:`, err);
-      // Liberar el reclamo. Para WhatsApp solo cuenta como intento un fallo
-      // "real" (p.ej. jid inválido): ni las caídas de conexión de la cuenta
-      // emisora ni la ausencia de sesiones queman intentos — con varias
-      // cuentas, anySessionOpen() puede ser true mientras la emisora se cayó
-      // a mitad del envío. Para WhatsApp API todo fallo cuenta.
-      try {
-        const msg = err instanceof Error ? err.message : String(err);
-        const connectionIssue = /connection closed|connection was lost|timed out|no disponible/i.test(msg);
-        const countAttempt =
-          item.channel === "whatsapp" ? anySessionOpen(item.org_id) && !connectionIssue : true;
-        const discarded = await releaseOutboxFailure(item, countAttempt);
-        if (discarded) {
-          console.error(`[bot] ⚠️ Outbox #${item.id} descartado tras agotar reintentos`);
-          if (item.kind === "followup" && item.conversation_id != null) {
-            try {
-              await markFollowUpFailed(item.conversation_id, item.scheduled_at);
-            } catch (fuErr) {
-              console.error(`[bot] No se pudo registrar el fallo del seguimiento:`, fuErr);
-            }
-          }
-        }
-      } catch (relErr) {
-        // Queda en sent=3; el reset del próximo arranque lo devuelve a pendiente.
-        console.error(`[bot] No se pudo liberar outbox #${item.id}:`, relErr);
-      }
-      continue;
-    }
-
-    console.log(
-      `[bot] → Outbox #${item.id}${item.kind === "notify" ? " (aviso a vendedor)" : ""} enviado a ${item.phone}`
-    );
-    try {
-      await markOutboxSent(item.id);
-    } catch (err) {
-      // El mensaje YA salió: no debe reenviarse aunque el marcado falle.
-      sentUnrecorded.add(item.id);
-      console.error(
-        `[bot] ⚠️ Outbox #${item.id} se envió pero no se pudo marcar como enviado; se reintentará solo el marcado:`,
-        err
+      if (!isTransientDbError(err) || stopping) throw err;
+      const delay = Math.min(30_000, 2_000 * attempt);
+      console.warn(
+        `[bot] ⚠️ No se pudo ${label}: la base no responde (${err instanceof Error ? err.message.slice(0, 160) : err}); reintento en ${delay / 1000}s...`
       );
-    }
-
-    // Seguimiento programado (CRM): al entregarse recién se refleja en el
-    // hilo del dashboard y se limpia el recordatorio del lead. Los 'manual'
-    // ya fueron insertados en messages por la API; los 'notify' son avisos
-    // internos y NUNCA tocan el hilo del cliente.
-    if (item.kind === "followup" && item.conversation_id != null) {
-      console.log(`[bot] ⏰ Seguimiento programado entregado a ${item.phone}`);
-      const f: FollowupFinalize = {
-        conversationId: item.conversation_id,
-        content: item.content,
-        scheduledAt: item.scheduled_at,
-        messageInserted: false,
-        attempts: 0,
-      };
-      pendingFinalize.set(item.id, f);
-      try {
-        await finalizeFollowup(item.id, f);
-      } catch (err) {
-        console.error(`[bot] Finalización del seguimiento #${item.id} pendiente de reintento:`, err);
-      }
+      await sleep(delay);
     }
   }
 }
 
 async function main(): Promise<void> {
   assertEnv();
+  instanceLock = acquireInstanceLock(LOCK_FILE, (owner) => {
+    lockLost = true;
+    console.error(`[bot] ❌ Otro bot (PID ${owner}) tomó la marca de instancia única mientras este estaba detenido: este se cierra.`);
+    void stop("Otro bot tomó el relevo");
+  });
+  // Dos arranques que reemplazaron a la vez la misma marca vieja: cada uno
+  // borró la del otro y creó la suya. El que la perdió se entera acá.
+  await sleep(500);
+  const owner = instanceLock.owner();
+  if (owner !== null && owner !== process.pid) {
+    console.error(`[bot] ❌ Otro bot (PID ${owner}) tomó la marca de instancia única al mismo tiempo: este no arranca.`);
+    process.exit(1);
+  }
+
+  // Un pedido de apagado viejo (de un bot que ya no corre) no aplica a este.
+  try {
+    fs.rmSync(STOP_FILE, { force: true });
+  } catch {
+    /* noop */
+  }
+  // Pedido de apagado por archivo (lanzador local). Desde ya: si la base no
+  // responde al arrancar, el bot espera a que vuelva y el pedido debe
+  // atenderse igual (si no, el lanzador lo terminaba matando a la fuerza).
+  stopFileTimer = setInterval(() => {
+    if (stopping || !fs.existsSync(STOP_FILE)) return;
+    try {
+      fs.rmSync(STOP_FILE, { force: true });
+    } catch {
+      /* noop */
+    }
+    void stop("pedido de apagado");
+  }, 1000);
+
   await logLlmProvider();
+  if (stopping) return;
 
   // Verificación temprana: si el schema no está aplicado, avisar claro.
-  // listWaAccounts también valida la migración de Equipo (multi-cuenta).
+  // listWaAccounts también valida la migración de Equipo (multi-cuenta). Si
+  // la base no responde (red caída, Supabase reiniciando) se ESPERA a que
+  // vuelva: salir dejaría a todos los clientes sin respuesta.
   try {
-    await assertCrmMigration();
+    await untilDbAvailable("verificar la base", () => assertCrmMigration());
   } catch (err) {
+    if (stopping) return; // apagado pedido mientras esperaba la base: lo cierra stop()
     console.error(`[bot] ❌ ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
   let bootAccounts: WaAccount[];
   try {
-    bootAccounts = await listWaAccounts();
+    bootAccounts = await untilDbAvailable("leer las cuentas de WhatsApp", () => listWaAccounts());
   } catch (err) {
+    if (stopping) return;
     console.error("[bot] ❌ No se pudo leer wa_accounts en Supabase.");
     console.error("[bot]    Re-ejecuta supabase/schema.sql completo en el SQL Editor.");
     console.error(`[bot]    Detalle: ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
 
-  // Filas que quedaron 'enviando' si el proceso murió a mitad de una entrega.
-  try {
-    await resetInFlightOutbox();
-  } catch (err) {
-    console.warn("[bot] No se pudo resetear el outbox en vuelo:", err);
-  }
+  rememberAccounts(bootAccounts);
+
+  // Filas que quedaron 'enviando' si el proceso murió a mitad de una entrega
+  // (si falla, el tick lo reintenta antes de enviar nada).
+  await resetInFlightOnce();
 
   // Estado limpio al arrancar (un run anterior pudo dejar 'connected'
   // colgado). OJO: restart_requested NO se toca — es una ORDEN pendiente del
@@ -675,6 +520,67 @@ async function main(): Promise<void> {
   lastKnownMasterByOrg = new Map(
     [...initialByOrg.entries()].map(([orgId, rows]) => [orgId, rows["whatsapp"]?.enabled ?? true])
   );
+  // Motor de respuestas: este proceso responde el canal 'whatsapp' (Baileys)
+  // — Cloud API lo responde el proceso de Next. Activo ANTES de abrir las
+  // sesiones: lo que llegue al conectar ya tiene quién lo responda.
+  configureReplyEngine({
+    channels: ["whatsapp"],
+    newMessageId: () => generateMessageIDV2(),
+    cannotReply: async (conv) =>
+      (lastKnownMasterByOrg.get(conv.org_id) ?? true)
+        ? null
+        : "el canal WhatsApp está deshabilitado en su organización",
+    // Mensajes del contacto aún en el respaldo en disco: se le responde
+    // cuando estén todos guardados.
+    inboundPending: (conv) => hasUnsavedInbound(conv.org_id, conv.channel, conv.external_id ?? conv.phone ?? ""),
+    send: sendBotReply,
+    // Respuestas por reintentar: un reinicio las retoma desde donde iban.
+    retryStore: fileRetryStore("reply-retries.json"),
+  });
+  // Rechazos de WhatsApp a mensajes ya enviados: visibles en la actividad
+  // del lead (antes figuraban como entregados sin llegar nunca).
+  setDeliveryErrorHook((e) => {
+    if (e.conversationId === null) return;
+    const hint =
+      e.code === "463"
+        ? " (cuenta restringida o sin token de privacidad para este contacto)"
+        : e.code === "479"
+          ? " (sesión del contacto desactualizada)"
+          : "";
+    addLeadEvent(
+      e.conversationId,
+      "delivery_error",
+      `WhatsApp rechazó un mensaje enviado a este contacto: error ${e.code}${hint}. Verifica si le llegó.`
+    ).catch(() => undefined);
+  });
+
+  // Lo que el proceso anterior recibió y no alcanzó a guardar (cierre
+  // forzado, corte de luz) pasa al respaldo en disco; y se anota qué
+  // contactos tienen mensajes esperando ahí, para que lo nuevo de esos
+  // contactos no se guarde antes. ANTES de abrir las sesiones.
+  // El diario anterior se aparta primero: este proceso escribe uno nuevo y
+  // vaciarlo nunca borra lo que quedaba del anterior. Si recuperarlo falla,
+  // se reintenta en el ciclo del respaldo.
+  try {
+    setAsidePreviousJournal();
+    const recovered = recoverJournal();
+    if (recovered.length > 0) {
+      console.log(`[bot] ${recovered.length} mensaje(s) recibido(s) antes del último cierre se recuperaron del diario en disco`);
+    }
+  } catch (err) {
+    console.error("[bot] ⚠️ No se pudo recuperar el diario de mensajes en disco (se reintenta):", err);
+  }
+  try {
+    const waiting = restoreSpooledContacts();
+    if (waiting > 0) {
+      console.log(`[bot] ${waiting} mensaje(s) esperan en el respaldo en disco; se guardan en cuanto la base responda`);
+    }
+  } catch (err) {
+    console.error("[bot] ⚠️ No se pudo leer el respaldo de mensajes en disco:", err);
+  }
+
+  // Apagado pedido durante el arranque: no se abre ninguna sesión.
+  if (stopping) return;
   const enabled = bootAccounts.filter(
     (a) => a.enabled && (lastKnownMasterByOrg.get(a.org_id) ?? true)
   );
@@ -689,9 +595,8 @@ async function main(): Promise<void> {
 
   // Tick único cada 2s: ciclo de vida de sesiones + señales + outbox.
   // El flag `ticking` evita que un tick lento se solape.
-  let ticking = false;
-  setInterval(async () => {
-    if (ticking) return;
+  tickTimer = setInterval(async () => {
+    if (ticking || stopping) return;
     ticking = true;
     try {
       // Toggles y configuración POR ORGANIZACIÓN — ante un blip de Supabase
@@ -718,6 +623,7 @@ async function main(): Promise<void> {
       // sesiones con datos a medias sería peor que esperar 2s).
       try {
         const accounts = await listWaAccounts();
+        rememberAccounts(accounts);
         await refreshInternalPhones(accounts);
         await reconcileSessions(masterByOrg, accounts);
       } catch {
@@ -729,30 +635,127 @@ async function main(): Promise<void> {
 
       // El outbox corre SIEMPRE: WhatsApp Cloud API no depende de Baileys.
       await flushOutbox(settingsByOrg);
+
+      // Respuestas que salieron pero no se pudieron guardar en el hilo, y
+      // pausas de la IA sin confirmar.
+      await flushPendingRecords();
     } catch (err) {
-      console.error("[bot] Error en tick de outbox/señales:", err);
+      logRepeated("error", "tick", "[bot] Error en tick de outbox/señales:", err);
     } finally {
       ticking = false;
     }
   }, 2000);
 
+  // Mensajes entrantes respaldados en disco durante un corte de la base: en
+  // su propio ciclo (con muchos, no frena el outbox ni las sesiones).
+  spoolTimer = setInterval(async () => {
+    if (replayingSpool || stopping) return;
+    replayingSpool = true;
+    try {
+      const saved = await replayInboundSpool();
+      if (saved > 0) console.log(`[bot] ${saved} mensaje(s) respaldado(s) en disco ya quedaron guardados`);
+    } catch (err) {
+      logRepeated("error", "spool", "[bot] Error reponiendo mensajes respaldados en disco:", err);
+    } finally {
+      replayingSpool = false;
+    }
+  }, 5000);
+
+  // Barrido de recuperación cada 5 s (aparte del tick, que puede tardar con
+  // el outbox): conversaciones en modo IA cuyo último mensaje es del cliente
+  // y nadie está respondiendo — tras un reinicio, un corte o un fallo de la
+  // IA. Arranca con margen para que las sesiones alcancen a conectar.
+  let sweeping = false;
+  sweepStartTimer = setTimeout(() => {
+    sweepStartTimer = null;
+    if (stopping) return;
+    sweepTimer = setInterval(async () => {
+      if (sweeping || stopping) return;
+      sweeping = true;
+      try {
+        const scheduled = await runRecoverySweep();
+        if (scheduled > 0) console.log(`[bot] 🔁 ${scheduled} conversación(es) sin responder retomada(s)`);
+      } catch (err) {
+        logRepeated("error", "sweep", "[bot] Error en el barrido de respuestas pendientes:", err);
+      } finally {
+        sweeping = false;
+      }
+    }, 5000);
+  }, 15_000);
+
   console.log("[bot] Loop de sesiones + outbox multicanal activo (cada 2s)");
 }
 
-async function stop(signal: string): Promise<void> {
-  console.log(`\n[bot] ${signal} recibido, cerrando...`);
-  try {
-    // Sin logout: las sesiones siguen vivas en WhatsApp y el próximo
-    // arranque NO pide QR.
-    await Promise.all(getAllSessions().map((s) => s.stop({ logout: false })));
-  } catch {
-    /* noop */
-  }
-  process.exit(0);
+let tickTimer: NodeJS.Timeout | null = null;
+let sweepTimer: NodeJS.Timeout | null = null;
+let sweepStartTimer: NodeJS.Timeout | null = null;
+let spoolTimer: NodeJS.Timeout | null = null;
+let stopFileTimer: NodeJS.Timeout | null = null;
+// Otro bot tomó la marca de instancia única (ver instance-lock.ts).
+let lockLost = false;
+let ticking = false;
+let replayingSpool = false;
+let stopping = false;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Apagado ordenado, con tope de tiempo. Lo que no alcance lo retoman, al
+// volver a arrancar, el diario en disco (mensajes recibidos) y el barrido
+// (respuestas). Al cerrar la ventana de la consola Windows termina el
+// proceso a los pocos segundos: ahí se hace el mismo cierre, más corto (los
+// límites se miden desde que empezó el apagado; si el cierre rápido llega a
+// mitad de uno normal, lo acorta).
+const STOP_NORMAL = { tickMs: 10_000, drainMs: 8_000, persistMs: 20_000, finalMs: 5_000 };
+const STOP_QUICK = { tickMs: 1_000, drainMs: 1_000, persistMs: 3_500, finalMs: 1_500 };
+let stopPlan = STOP_NORMAL;
+
+async function stop(signal: string, quick = false): Promise<void> {
+  if (quick) stopPlan = STOP_QUICK;
+  if (stopping) return;
+  stopping = true;
+  stopOutbox();
+  console.log(`\n[bot] ${signal}: cerrando ordenadamente...`);
+  // Lo que llegue de aquí en más: un intento contra la base y, si falla,
+  // directo al respaldo en disco.
+  beginInboundShutdown();
+  for (const timer of [tickTimer, sweepTimer, spoolTimer, stopFileTimer]) if (timer) clearInterval(timer);
+  if (sweepStartTimer) clearTimeout(sweepStartTimer);
+  const t0 = Date.now();
+  const within = (ms: number) => Date.now() - t0 < ms;
+  // 1) El tick en curso (una entrega a medias) y las respuestas en curso.
+  while ((ticking || replayingSpool) && within(stopPlan.tickMs)) await sleep(100);
+  const drainFrom = Date.now();
+  await drainReplies(() =>
+    Math.max(drainFrom + 300, Math.min(drainFrom + stopPlan.drainMs, t0 + stopPlan.tickMs + stopPlan.drainMs))
+  ).catch(() => undefined);
+  // 2) Sesiones fuera (sin logout: el próximo arranque no pide QR). Baileys
+  //    suelta lo que retenía en su buffer y no entran mensajes nuevos.
+  await Promise.all(getAllSessions().map((s) => s.stop({ logout: false }))).catch(() => undefined);
+  // 3) Lo recibido termina de guardarse (o de respaldarse en disco). Lo que
+  //    esperaba algo en memoria (aviso "no disponible" de un anuncio, @lid
+  //    sin número) se resuelve ya, después de procesar lo que soltó Baileys.
+  while (busyChains("intake:") > 0 && within(stopPlan.persistMs)) await sleep(100);
+  flushDeferredInbound();
+  while ((busyChains("intake:") > 0 || busyChains("persist:") > 0) && within(stopPlan.persistMs)) await sleep(100);
+  // 4) Pendientes en memoria: un último intento (acotado: con la base caída
+  //    cada consulta puede tardar).
+  await withTimeout(Promise.all([flushPendingRecords(), flushOutboxBookkeeping()]), stopPlan.finalMs, "pendientes al cerrar").catch(
+    () => undefined
+  );
+  instanceLock?.stopRenewal();
+  process.exit(lockLost ? 1 : 0);
 }
 
-process.on("SIGINT", () => void stop("SIGINT"));
-process.on("SIGTERM", () => void stop("SIGTERM"));
+process.on("SIGINT", () => void stop("SIGINT recibido"));
+process.on("SIGTERM", () => void stop("SIGTERM recibido"));
+// Windows: cerrar la ventana de la consola (SIGHUP: unos segundos antes de
+// que Windows termine el proceso) o Ctrl+Break (SIGBREAK).
+process.on("SIGHUP", () => void stop("Ventana cerrada", true));
+process.on("SIGBREAK", () => void stop("SIGBREAK recibido"));
+// Lanzador local (dev-local): pedido de apagado por el canal IPC.
+process.on("message", (msg) => {
+  if (msg === "shutdown") void stop("Pedido de apagado del lanzador");
+});
 
 main().catch((err) => {
   console.error("[bot] Error fatal:", err);

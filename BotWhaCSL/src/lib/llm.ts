@@ -95,6 +95,41 @@ function fromEnv(): LlmConfig | null {
 const CACHE_TTL_MS = 15_000;
 const configCache = new Map<number, { at: number; config: LlmConfig | null }>();
 const clientCache = new Map<string, OpenAI>();
+const LLM_TIMEOUT_MS = 45_000;
+
+// Tope de llamadas simultáneas a la IA por proceso, compartido por las
+// respuestas a clientes y el análisis del CRM: con muchos clientes a la vez
+// esperan su turno en vez de chocar contra el límite del proveedor. Estado
+// en globalThis: Next puede cargar este módulo en más de una copia.
+const LLM_MAX_CONCURRENCY = Math.max(1, Number(process.env.LLM_MAX_CONCURRENCY) || 6);
+const llmSlots = ((globalThis as typeof globalThis & {
+  __botwhaLlmSlots?: { active: number; waiters: (() => void)[] };
+}).__botwhaLlmSlots ??= { active: 0, waiters: [] });
+
+export async function withLlmSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (llmSlots.active < LLM_MAX_CONCURRENCY) llmSlots.active++;
+  else await new Promise<void>((resolve) => llmSlots.waiters.push(resolve)); // el cupo se transfiere
+  try {
+    return await fn();
+  } finally {
+    const next = llmSlots.waiters.shift();
+    if (next) next();
+    else llmSlots.active--;
+  }
+}
+
+// ¿Vale la pena reintentar? Sí ante límites de tasa, errores del proveedor,
+// cortes de red, timeouts y respuestas vacías; no ante errores de
+// configuración (clave inválida, modelo inexistente, petición mal formada).
+export function isRetryableLlmError(err: unknown): boolean {
+  if (err instanceof OpenAI.APIConnectionError) return true; // incluye timeout
+  if (err instanceof OpenAI.APIError) {
+    const status = err.status ?? 0;
+    return status === 408 || status === 409 || status === 429 || status >= 500 || status === 0;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /respuesta vacía|fetch failed|network|timed? ?out|ECONNRESET|socket hang up/i.test(msg);
+}
 
 export function invalidateLlmCache(): void {
   configCache.clear();
@@ -128,6 +163,11 @@ function clientFor(config: LlmConfig): OpenAI {
     client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: LLM_PROVIDERS[config.provider].baseURL,
+      // Sin esto el SDK espera hasta 10 min por intento: un pedido colgado
+      // bloqueaba la cola de ese contacto ~15 min. Los reintentos largos los
+      // hace el motor de respuestas (isRetryableLlmError).
+      timeout: LLM_TIMEOUT_MS,
+      maxRetries: 1,
     });
     // Tope defensivo: un cliente por combinación proveedor/clave.
     if (clientCache.size > 100) clientCache.clear();

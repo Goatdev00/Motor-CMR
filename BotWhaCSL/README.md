@@ -138,7 +138,13 @@ corrido `npm run build` antes, porque usa `next start`.)
 En Windows, para desarrollo local, `npm run dev:local` levanta bot +
 dashboard en <http://localhost:3434> (o el puerto de `PORT`) y antes mata
 el bot anterior de esta copia y lo que ocupe ese puerto, así nunca quedan
-dos bots con la misma sesión.
+dos bots con la misma sesión. Si se abre `dev:local` otra vez, la ventana
+anterior cierra su bot ordenadamente y se va cuando la nueva ya levantó el
+suyo y lleva unos segundos corriendo (si la nueva se cierra antes, la
+anterior vuelve a levantarlo). Además el bot se niega a arrancar si ya hay
+otro corriendo para esta instalación, se haya lanzado como se haya lanzado
+(`auth/bot.lock`); y si un bot estuvo congelado (p.ej. la consola en modo
+selección) y otro tomó su lugar, al volver se cierra solo.
 
 ### Paso 6 — Iniciar sesión y escanear el QR
 
@@ -234,22 +240,108 @@ badge de canal.
 3. **Webhook**: Meta necesita una URL pública HTTPS. En local, abre un túnel:
    `cloudflared tunnel --url http://localhost:3013` (o ngrok) y usa
    `https://TU-TUNEL/api/webhooks/meta`. En la tarjeta **Webhook de Meta
-   (WhatsApp API)** del dashboard genera el **Verify Token** y guárdalo;
-   registra URL + token en la app de
+   (WhatsApp API)** del dashboard genera el **Verify Token** y pega el
+   **App Secret** de tu app (Meta → Configuración de la app → Básica →
+   Clave secreta de la app) y guarda; registra URL + token en la app de
    Meta (Webhooks) y suscribe el campo `messages` en el objeto **WhatsApp
-   Business Account**.
+   Business Account**. **Sin App Secret el webhook rechaza todo** (responde
+   503): sin la firma, cualquiera podría inyectar mensajes falsos de
+   clientes. Solo para pruebas locales existe
+   `META_WEBHOOK_ALLOW_UNSIGNED=1` en `.env.local` (ignorada en producción).
 4. En modo desarrollo de la app de Meta solo pueden escribir los números de
    prueba y los administradores/testers; para atender al público general
    debes completar la **verificación del negocio** de Meta y publicar la app.
 
 Notas de arquitectura: los mensajes de WhatsApp API entran por el webhook
-(proceso web) y la IA responde ahí mismo por la Graph API; los envíos
-manuales y seguimientos de TODOS los canales salen por el outbox, que procesa
-el bot — **el proceso `npm run start:bot` debe correr siempre** (es el worker
-de envíos), aunque Baileys esté deshabilitado. Meta impone una **ventana de
-24 h** para responder mensajes: un seguimiento programado más allá de la
-ventana puede ser rechazado por Meta (queda registrado como fallido en la
-actividad del lead).
+(proceso web), que solo los guarda y responde 200 al instante; la IA
+responde en segundo plano en ese mismo proceso por la Graph API. Los envíos
+manuales, seguimientos y respuestas que quedaron en cola de TODOS los canales
+salen por el outbox, que procesa el bot — **el proceso `npm run start:bot`
+debe correr siempre** (es el worker de envíos), aunque Baileys esté
+deshabilitado. Meta impone una **ventana de 24 h** para responder mensajes:
+un seguimiento programado más allá de la ventana puede ser rechazado por Meta
+(queda registrado como fallido en la actividad del lead).
+
+## Muchos clientes a la vez: contexto aislado y nada se pierde
+
+El bot atiende a muchas personas en paralelo sin mezclar conversaciones:
+cada mensaje se guarda en el hilo de SU contacto (organización + canal +
+número) y cada respuesta se arma solo con el historial de ese hilo y se
+envía al mismo chat por el que escribió el cliente. Además:
+
+- **Ráfagas**: si alguien manda varios mensajes seguidos, el bot responde
+  una vez con todo el contexto (no una respuesta por mensaje ni repetidas).
+  Si el cliente sigue escribiendo mientras la IA redacta, la respuesta se
+  rehace con lo nuevo. Si en la ráfaga aparece una **palabra clave**, su
+  respuesta automática cuenta como respuesta a lo escrito antes en esa
+  ráfaga, y la IA responde lo que el cliente escriba después.
+- **Nada se pierde**: guardar un mensaje es idempotente y con reintentos.
+  Cada mensaje recibido se anota primero en un diario en disco
+  (`auth/inbound-journal.jsonl`): si el bot se cierra a la fuerza o se corta
+  la luz antes de guardarlo, se recupera al arrancar. Si Supabase está caído
+  más de ~1 min, el mensaje queda respaldado en `auth/inbound-spool.jsonl` y
+  se guarda (en orden) cuando la base vuelve. Si la IA o el envío fallan, se
+  reintenta; si la cuenta sigue caída, la respuesta queda en cola y sale al
+  reconectar, con el mismo id (WhatsApp descarta una segunda copia); si no
+  sale en 30 min, la conversación pasa a un asesor. Tras un reinicio, el
+  bot retoma solo las conversaciones que quedaron sin responder; las que
+  estaba reintentando (también el aviso de derivación a un asesor) quedan
+  anotadas en `auth/reply-retries.json`, con hasta dónde se había respondido.
+- **Al reconectar**, el bot primero recibe TODO lo que llegó mientras estaba
+  desconectado (si WhatsApp lo retiene en lotes, pide los siguientes) y
+  recién después responde: así ve la respuesta que un asesor pudo haber dado
+  desde el teléfono, y los mensajes nuevos del cliente. Un envío nunca sale
+  por una conexión nueva sin haber recibido antes lo pendiente de ella.
+- **Respuestas en cola primero**: si una respuesta quedó en cola (canal
+  caído) y el cliente vuelve a escribir, primero sale la de la cola y la
+  siguiente ya la tiene en cuenta (nada de responder dos veces lo mismo).
+  Los mensajes a un mismo cliente (del dashboard o en cola) salen en el
+  orden en que se escribieron, aunque alguno haya tenido que esperar.
+- **Nunca encima de un humano**: si un asesor toma la conversación
+  (dashboard) mientras la IA redacta, la respuesta de la IA no sale; las
+  respuestas por palabra clave y el aviso de derivación también se
+  verifican justo antes de salir. Lo que el equipo escribe desde el
+  **teléfono del negocio o WhatsApp Web** queda en el hilo (con el mismo
+  respaldo en disco que los mensajes de clientes) y pausa la IA. Un chat que
+  un asesor **inicia** desde el teléfono crea el lead en modo HUMANO. La
+  bienvenida automática de WhatsApp Business (la que sale 1-3 s después del
+  primer mensaje de un lead, también en anuncios "clic a WhatsApp") queda
+  marcada como automática y no pausa la IA; su texto se aprende
+  (`auth/auto-texts.json`) para reconocerla aunque salga unos segundos más
+  tarde. Cualquier otro mensaje del teléfono cuenta como un asesor; una
+  reacción o una edición no.
+- **WhatsApp API (Meta)**: un envío que Meta no alcanzó a confirmar no se
+  repite (podría llegar dos veces); queda registrado con un aviso en la
+  actividad del lead. Los mensajes a un número no registrado en Canales se
+  guardan (en la organización de la agencia) y pasan a un asesor, sin
+  respuesta automática.
+- **Multimedia**: se leen las leyendas de fotos/videos/documentos; notas de
+  voz, imágenes sin texto, ubicaciones, contactos, pedidos y productos del
+  catálogo, encuestas y formularios quedan registrados con una marca y la
+  IA pide que lo escriban.
+- **Apagado ordenado**: con `npm run dev:local`, **Ctrl+C** le pide al bot
+  terminar lo que tiene en curso antes de salir (hasta ~30 s). Cerrar la
+  ventana con la X le da solo unos segundos (Windows termina los procesos):
+  el bot hace un cierre corto y lo que no alcance lo retoma al volver a
+  arrancar. Para cerrar, mejor Ctrl+C.
+- **Visibilidad**: en la actividad de cada lead quedan los rechazos de
+  WhatsApp/Meta (p.ej. error 463), las respuestas que quedaron en cola y
+  las derivaciones automáticas.
+
+**Migración (una vez):** ejecuta en el SQL Editor de Supabase la sección
+**"BLINDAJE DEL PIPELINE DE MENSAJES"** del final de `supabase/schema.sql`
+(o el archivo completo: es idempotente). El bot funciona sin ella, pero con
+ella es *imposible* guardar o responder dos veces un mensaje re-entregado, y
+las respuestas que no salen en el momento quedan **en cola**: sin ella no
+se pueden dejar en cola de forma segura (no habría cómo saber, tras un
+reinicio, qué mensaje respondía cada una), así que si WhatsApp está caído
+varios minutos el bot reintenta en vivo y, si no puede, la conversación
+pasa a un asesor.
+
+Ajustes opcionales en `.env.local`: `AUTO_REPLY_MAX_AGE_HOURS` (por defecto
+24: mensajes escritos hace más que esto — p.ej. con el bot apagado un día —
+se guardan pero no se responden solos) y `LLM_MAX_CONCURRENCY` (por defecto
+6 llamadas simultáneas a la IA por proceso).
 
 ## Equipo (multi-cuenta + acceso + enrutamiento por etapa)
 
